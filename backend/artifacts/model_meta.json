@@ -1,0 +1,20 @@
+{
+  "model_version": "iso-forest-v1.0",
+  "trained_at": "2026-08-26T18:07:39.647260+00:00",
+  "n_samples": 67,
+  "n_features": 10,
+  "feature_names": [
+    "amount",
+    "amount_log",
+    "hour_of_day",
+    "day_of_week",
+    "is_round_amount",
+    "src_out_degree",
+    "dst_in_degree",
+    "src_tx_count_24h",
+    "dst_tx_count_24h",
+    "amount_vs_src_mean"
+  ],
+  "contamination": 0.08,
+  "n_estimators": 100
+}
