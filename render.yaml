@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: tracex-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    rootDir: backend
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DIRECT_INGEST_MODE
+        value: "true"
+      - key: CORS_ORIGINS
+        value: "*" # Set to deployed frontend URL for security hardening
