@@ -160,11 +160,14 @@ def train_model(
     model.fit(X_scaled)
 
     # Save artifacts
-    os.makedirs(settings.artifacts_dir, exist_ok=True)
-    with open(ARTIFACT_PATH, "wb") as f:
-        pickle.dump(model, f)
-    with open(SCALER_PATH, "wb") as f:
-        pickle.dump(scaler, f)
+    try:
+        os.makedirs(settings.artifacts_dir, exist_ok=True)
+        with open(ARTIFACT_PATH, "wb") as f:
+            pickle.dump(model, f)
+        with open(SCALER_PATH, "wb") as f:
+            pickle.dump(scaler, f)
+    except Exception as e:
+        logger.warning("Could not write model binary files (filesystem read-only?)", error=str(e))
 
     meta = {
         "model_version": MODEL_VERSION,
@@ -175,10 +178,13 @@ def train_model(
         "contamination": contamination,
         "n_estimators": n_estimators,
     }
-    with open(META_PATH, "w") as f:
-        json.dump(meta, f, indent=2)
+    try:
+        with open(META_PATH, "w") as f:
+            json.dump(meta, f, indent=2)
+    except Exception as e:
+        logger.warning("Could not write model metadata file", error=str(e))
 
-    logger.info("Model trained and saved", path=ARTIFACT_PATH)
+    logger.info("Model training process complete", path=ARTIFACT_PATH)
     return {"status": "trained", **meta}
 
 
