@@ -11,7 +11,10 @@ const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface EvalResult {
   run_at: string;
+  dataset_id?: string;
   labeled_transactions: number;
+  normal_count?: number;
+  suspicious_count?: number;
   true_positives: number;
   false_positives: number;
   false_negatives: number;
@@ -96,28 +99,8 @@ function MatrixCell({ label, value, color }: { label: string; value: number; col
   );
 }
 
-const BENCHMARK_RESULT: EvalResult = {
-  run_at: new Date().toISOString(),
-  labeled_transactions: 420,
-  true_positives: 194,
-  false_positives: 8,
-  false_negatives: 6,
-  true_negatives: 212,
-  precision: 0.9604,
-  recall: 0.9700,
-  f1: 0.9652,
-  false_positive_rate: 0.0364,
-  per_scenario: {
-    CIRCULAR_LAYERING: { precision: 0.9783, recall: 0.9850, f1: 0.9816, tp: 45, fp: 1, fn: 1, tn: 50 },
-    RAPID_PASSTHROUGH: { precision: 0.9524, recall: 0.9600, f1: 0.9562, tp: 40, fp: 2, fn: 2, tn: 48 },
-    DORMANT_REACTIVATION: { precision: 0.9412, recall: 0.9697, f1: 0.9552, tp: 32, fp: 2, fn: 1, tn: 35 },
-    HIGH_VELOCITY_BURST: { precision: 0.9744, recall: 0.9744, f1: 0.9744, tp: 38, fp: 1, fn: 1, tn: 42 },
-    FUNNEL_ACCOUNT: { precision: 0.9512, recall: 0.9512, f1: 0.9512, tp: 39, fp: 2, fn: 1, tn: 37 },
-  },
-};
-
 export default function EvaluationPage() {
-  const [result, setResult] = useState<EvalResult | null>(BENCHMARK_RESULT);
+  const [result, setResult] = useState<EvalResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState('');
@@ -125,24 +108,24 @@ export default function EvaluationPage() {
   const runEvaluation = async () => {
     setLoading(true);
     setError('');
+    setResult(null);
     try {
       const res = await fetch(`${API}/api/v1/evaluation/run`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
-        if (data.status === 'no_labeled_data' || !data.precision) {
-          setResult({ ...BENCHMARK_RESULT, run_at: new Date().toISOString() });
+        if (data.status === 'no_labeled_data') {
+          setError('No labeled evaluation data available. Please generate or load the synthetic dataset.');
+        } else if (!data.precision && data.precision !== 0) {
+          setError('Invalid evaluation response from backend.');
         } else {
           setResult(data);
         }
       } else {
-        // Fallback to benchmark data on network/backend issue
-        await new Promise(r => setTimeout(r, 600));
-        setResult({ ...BENCHMARK_RESULT, run_at: new Date().toISOString() });
+        const detail = await res.text();
+        setError(`Evaluation unavailable. Backend returned status ${res.status}: ${detail || 'Internal Error'}`);
       }
-    } catch {
-      // Offline fallback
-      await new Promise(r => setTimeout(r, 600));
-      setResult({ ...BENCHMARK_RESULT, run_at: new Date().toISOString() });
+    } catch (err: any) {
+      setError('Evaluation unavailable. Backend is unreachable. Please verify the server is running.');
     } finally {
       setLoading(false);
     }
@@ -155,11 +138,13 @@ export default function EvaluationPage() {
       const res = await fetch(`${API}/api/v1/evaluation/latest`);
       if (res.ok) {
         setResult(await res.json());
+      } else if (res.status === 404) {
+        setError('No evaluation result available. Run the benchmark to generate metrics.');
       } else {
-        setResult({ ...BENCHMARK_RESULT, run_at: new Date().toISOString() });
+        setError(`Failed to retrieve latest evaluation (Status ${res.status}).`);
       }
     } catch {
-      setResult({ ...BENCHMARK_RESULT, run_at: new Date().toISOString() });
+      setError('Evaluation unavailable. Backend is unreachable.');
     } finally {
       setFetching(false);
     }
@@ -263,10 +248,19 @@ export default function EvaluationPage() {
               Evaluation Complete
             </span>
             <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Benchmark Dataset: <strong style={{ color: 'var(--text-primary)' }}>{result.dataset_id || 'SYNTHETIC_EVAL'}</strong>
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
               Run at: {new Date(result.run_at).toLocaleString()}
             </span>
             <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-              Labeled transactions: <strong style={{ color: 'var(--text-primary)' }}>{result.labeled_transactions}</strong>
+              Evaluated: <strong style={{ color: 'var(--text-primary)' }}>{result.labeled_transactions}</strong>
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Ground-truth Suspicious: <strong style={{ color: 'var(--text-warning)' }}>{result.suspicious_count ?? (result.true_positives + result.false_negatives)}</strong>
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Ground-truth Normal: <strong style={{ color: 'var(--text-primary)' }}>{result.normal_count ?? (result.false_positives + result.true_negatives)}</strong>
             </span>
           </div>
 
@@ -309,7 +303,7 @@ export default function EvaluationPage() {
           </div>
 
           {/* Per-scenario breakdown */}
-          {Object.keys(result.per_scenario).length > 0 && (
+          {result.per_scenario && Object.keys(result.per_scenario).length > 0 && (
             <div>
               <div className="section-label" style={{ marginBottom: 16 }}>
                 <BarChart3 size={10} />
@@ -332,7 +326,7 @@ export default function EvaluationPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {Object.entries(result.per_scenario).map(([scenario, metrics]) => (
+                      {Object.entries(result.per_scenario).map(([scenario, metrics]: [string, any]) => (
                         <tr key={scenario}>
                           <td>
                             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent-bright)' }}>
@@ -340,19 +334,31 @@ export default function EvaluationPage() {
                             </span>
                           </td>
                           <td>
-                            <span style={{ color: metrics.precision >= 0.7 ? '#34d399' : metrics.precision >= 0.5 ? '#fbbf24' : '#f87171', fontWeight: 700 }}>
-                              {(metrics.precision * 100).toFixed(1)}%
-                            </span>
+                            {scenario === 'NORMAL' ? (
+                              <span style={{ color: 'var(--text-tertiary)' }}>N/A</span>
+                            ) : (
+                              <span style={{ color: metrics.precision >= 0.7 ? '#34d399' : metrics.precision >= 0.5 ? '#fbbf24' : '#f87171', fontWeight: 700 }}>
+                                {(metrics.precision * 100).toFixed(1)}%
+                              </span>
+                            )}
                           </td>
                           <td>
-                            <span style={{ color: metrics.recall >= 0.6 ? '#34d399' : metrics.recall >= 0.4 ? '#fbbf24' : '#f87171', fontWeight: 700 }}>
-                              {(metrics.recall * 100).toFixed(1)}%
-                            </span>
+                            {scenario === 'NORMAL' ? (
+                              <span style={{ color: 'var(--text-tertiary)' }}>N/A</span>
+                            ) : (
+                              <span style={{ color: metrics.recall >= 0.6 ? '#34d399' : metrics.recall >= 0.4 ? '#fbbf24' : '#f87171', fontWeight: 700 }}>
+                                {(metrics.recall * 100).toFixed(1)}%
+                              </span>
+                            )}
                           </td>
                           <td>
-                            <span style={{ fontWeight: 700 }}>
-                              {(metrics.f1 * 100).toFixed(1)}%
-                            </span>
+                            {scenario === 'NORMAL' ? (
+                              <span style={{ color: 'var(--text-tertiary)' }}>N/A</span>
+                            ) : (
+                              <span style={{ fontWeight: 700 }}>
+                                {(metrics.f1 * 100).toFixed(1)}%
+                              </span>
+                            )}
                           </td>
                           <td style={{ color: '#34d399' }}>{metrics.tp}</td>
                           <td style={{ color: '#f87171' }}>{metrics.fp}</td>
@@ -362,10 +368,13 @@ export default function EvaluationPage() {
                       ))}
                     </tbody>
                   </table>
+                  <div style={{ padding: '8px 16px', fontSize: 11, color: 'var(--text-tertiary)', borderTop: '1px solid var(--border-subtle)', lineHeight: 1.4 }}>
+                    * Note: Scenario Precision is 100% for suspicious typologies because false positives (alerts triggered on normal transactions) are attributed to the <strong>NORMAL</strong> scenario dataset slice.
+                  </div>
                 </div>
                 {/* Mobile cards */}
                 <div className="show-mobile" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {Object.entries(result.per_scenario).map(([scenario, metrics]) => (
+                  {Object.entries(result.per_scenario).map(([scenario, metrics]: [string, any]) => (
                     <div key={scenario} style={{
                       background: 'rgba(10, 18, 35, 0.6)', border: '1px solid var(--border-subtle)',
                       borderRadius: 10, padding: 14,
@@ -373,9 +382,9 @@ export default function EvaluationPage() {
                       <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent-bright)', marginBottom: 10 }}>{scenario}</div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
                         {[
-                          { l: 'Precision', v: `${(metrics.precision * 100).toFixed(1)}%` },
-                          { l: 'Recall', v: `${(metrics.recall * 100).toFixed(1)}%` },
-                          { l: 'F1', v: `${(metrics.f1 * 100).toFixed(1)}%` },
+                          { l: 'Precision', v: scenario === 'NORMAL' ? 'N/A' : `${(metrics.precision * 100).toFixed(1)}%` },
+                          { l: 'Recall', v: scenario === 'NORMAL' ? 'N/A' : `${(metrics.recall * 100).toFixed(1)}%` },
+                          { l: 'F1', v: scenario === 'NORMAL' ? 'N/A' : `${(metrics.f1 * 100).toFixed(1)}%` },
                         ].map(({ l, v }) => (
                           <div key={l} style={{ textAlign: 'center' }}>
                             <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)' }}>{v}</div>

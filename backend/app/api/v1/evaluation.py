@@ -45,7 +45,7 @@ async def run_evaluation(
     from app.detection.pipeline import get_transaction_history
     from app.detection.risk_fusion import list_alerts
 
-    history = get_transaction_history()
+    history = get_transaction_history("SYNTHETIC_EVAL")
     labeled = [t for t in history if t.get("is_suspicious") is not None]
 
     if not labeled:
@@ -58,9 +58,6 @@ async def run_evaluation(
         base_dir = Path(__file__).resolve().parent.parent.parent
         candidates = [
             base_dir / "data" / "synthetic.json",
-            base_dir / "data" / "synthetic_organised_crime.json",
-            base_dir / "data" / "synthetic_corporate_fraud.json",
-            base_dir / "data" / "synthetic_retail_fraud.json",
         ]
         
         tx_creates = []
@@ -79,7 +76,7 @@ async def run_evaluation(
 
         if tx_creates:
             await process_batch(tx_creates, dataset_id="SYNTHETIC_EVAL")
-            history = get_transaction_history()
+            history = get_transaction_history("SYNTHETIC_EVAL")
             labeled = [t for t in history if t.get("is_suspicious") is not None]
 
     if not labeled:
@@ -88,12 +85,7 @@ async def run_evaluation(
             "message": "No labeled ground-truth data available.",
         }
 
-    # Collect only the unique dataset IDs present in the labeled transactions to prevent cross-contamination
-    labeled_dataset_ids = {t.get("dataset_id") for t in labeled if t.get("dataset_id")}
-
-    alerts = list_alerts(limit=10000)
-    # Filter alerts to only include those belonging to the labeled datasets
-    alerts = [a for a in alerts if a.dataset_id in labeled_dataset_ids]
+    alerts = list_alerts(dataset_id="SYNTHETIC_EVAL", limit=10000)
 
     alerted_tx_ids: set = set()
     for a in alerts:
@@ -146,7 +138,10 @@ async def run_evaluation(
     from datetime import datetime, timezone
     result = {
         "run_at": datetime.now(timezone.utc).isoformat(),
+        "dataset_id": "SYNTHETIC_EVAL",
         "labeled_transactions": len(labeled),
+        "normal_count": fp + tn,
+        "suspicious_count": tp + fn,
         "true_positives": tp,
         "false_positives": fp,
         "false_negatives": fn,

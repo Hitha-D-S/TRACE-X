@@ -17,21 +17,27 @@ from app.models.alert import Alert, AlertSeverity, RiskComponents, RuleEvidence
 logger = get_logger(__name__)
 settings = get_settings()
 
+from collections import defaultdict
+
 # In-memory store for deduplication and alert accumulation
 # In production: use Redis or Postgres for persistence
-_alert_store: Dict[str, Alert] = {}
+_alert_stores: Dict[str, Dict[str, Alert]] = defaultdict(dict)
 
 
 def _deduplicate_key(
     entity_ids: List[str],
     alert_type: str,
     time_bucket_minutes: int = 60,
+    ref_timestamp: Optional[datetime] = None,
 ) -> str:
     """Create a deduplication key for similar alerts in the same time window."""
     sorted_entities = ",".join(sorted(entity_ids))
-    now = datetime.now(timezone.utc)
-    bucket = (now.hour * 60 + now.minute) // time_bucket_minutes
-    return f"{alert_type}:{sorted_entities}:{bucket}"
+    dt = ref_timestamp or datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    bucket = (dt.hour * 60 + dt.minute) // time_bucket_minutes
+    date_str = dt.strftime("%Y%m%d")
+    return f"{alert_type}:{sorted_entities}:{date_str}:{bucket}"
 
 
 def compute_rule_score(evidences: List[RuleEvidence]) -> float:
@@ -55,6 +61,7 @@ def fuse_risk_scores(
     dataset_id: Optional[str] = None,
     top_features: Optional[List[str]] = None,
     model_version: Optional[str] = None,
+    ref_timestamp: Optional[datetime] = None,
 ) -> Optional[Alert]:
     """
     Compute final risk score from all component signals.
@@ -134,9 +141,11 @@ def fuse_risk_scores(
     )
 
     # Deduplication
-    dedup_key = _deduplicate_key(entity_ids, alert_type)
-    if dedup_key in _alert_store:
-        existing = _alert_store[dedup_key]
+    dedup_key = _deduplicate_key(entity_ids, alert_type, ref_timestamp=ref_timestamp)
+    ds_key = dataset_id or "SYNTHETIC"
+    alert_store = _alert_stores[ds_key]
+    if dedup_key in alert_store:
+        existing = alert_store[dedup_key]
         # Update risk score if higher
         if final_score_100 > existing.risk_components.final_risk_score:
             existing.risk_components = risk_components
@@ -170,7 +179,7 @@ def fuse_risk_scores(
         source=dataset_id.split(":")[0] if dataset_id and ":" in dataset_id else "SYNTHETIC",
     )
 
-    _alert_store[dedup_key] = alert
+    alert_store[dedup_key] = alert
     t_end = time.perf_counter()
     logger.info(
         "alert_generated",
@@ -184,9 +193,10 @@ def fuse_risk_scores(
 
 
 def get_alert_by_id(alert_id: str) -> Optional[Alert]:
-    for alert in _alert_store.values():
-        if alert.id == alert_id:
-            return alert
+    for store in _alert_stores.values():
+        for alert in store.values():
+            if alert.id == alert_id:
+                return alert
     return None
 
 
@@ -196,9 +206,12 @@ def list_alerts(
     severity: Optional[str] = None,
     limit: int = 50,
 ) -> List[Alert]:
-    alerts = list(_alert_store.values())
     if dataset_id:
-        alerts = [a for a in alerts if a.dataset_id == dataset_id]
+        alerts = list(_alert_stores[dataset_id].values())
+    else:
+        alerts = []
+        for store in _alert_stores.values():
+            alerts.extend(store.values())
     if min_risk > 0:
         alerts = [a for a in alerts if a.risk_components.final_risk_score >= min_risk]
     if severity:
@@ -209,7 +222,7 @@ def list_alerts(
 
 def clear_alerts() -> None:
     """Reset alert store (used in tests)."""
-    _alert_store.clear()
+    _alert_stores.clear()
 
 
 def determine_alert_type(rule_evidences: List[RuleEvidence]) -> str:

@@ -141,8 +141,8 @@ def run_full_evaluation(api_url: str, normal_count: int, num_accounts: int):
 def main():
     parser = argparse.ArgumentParser(description="TRACE-X Evaluation Runner")
     parser.add_argument("--api", type=str, default="http://localhost:8000")
-    parser.add_argument("--count", type=int, default=200, help="Normal transactions count")
-    parser.add_argument("--accounts", type=int, default=30, help="Unique accounts count")
+    parser.add_argument("--count", type=int, default=500, help="Normal transactions count")
+    parser.add_argument("--accounts", type=int, default=50, help="Unique accounts count")
     args = parser.parse_args()
 
     run_full_evaluation(api_url=args.api, normal_count=args.count, num_accounts=args.accounts)

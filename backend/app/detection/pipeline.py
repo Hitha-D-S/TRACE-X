@@ -26,16 +26,17 @@ from app.models.alert import Alert
 logger = get_logger(__name__)
 settings = get_settings()
 
-# In-memory graph (persisted to Neo4j on writes)
-_graph: nx.MultiDiGraph = nx.MultiDiGraph()
+from collections import defaultdict
 
-# In-memory transaction history for features
-_transaction_history: List[Dict[str, Any]] = []
+# Partitioned state dictionaries keyed by dataset_id to isolate datasets
+_graphs: Dict[str, nx.MultiDiGraph] = defaultdict(nx.MultiDiGraph)
+_transaction_histories: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+_account_last_activities: Dict[str, Dict[str, datetime]] = defaultdict(dict)
 
-# Account last-activity tracking for dormancy detection
-_account_last_activity: Dict[str, datetime] = {}
+MAX_HISTORY = 10_000  # cap in-memory history per dataset
 
-MAX_HISTORY = 10_000  # cap in-memory history
+def _get_dataset_key(tx_dict: Dict[str, Any]) -> str:
+    return tx_dict.get("dataset_id") or "SYNTHETIC"
 
 
 async def process_transaction(
@@ -58,35 +59,36 @@ async def process_transaction(
 
     tx_dict = tx.model_dump()
     tx_id = tx_dict["id"]
+    ds_key = _get_dataset_key(tx_dict)
 
     # ── 1. Idempotency ───────────────────────────────────────
     if await redis_client.is_already_processed(tx_id):
         logger.info("tx_duplicate_skipped", tx_id=tx_id, cid=cid)
         # Return existing from history if available
-        existing = next((t for t in _transaction_history if t.get("id") == tx_id), None)
+        existing = next((t for t in _transaction_histories[ds_key] if t.get("id") == tx_id), None)
         if existing:
             return TransactionFull(**existing)
 
     # ── 2. Update in-memory graph and history ────────────────
     _add_to_graph(tx_dict)
-    _transaction_history.append(tx_dict)
-    if len(_transaction_history) > MAX_HISTORY:
-        _transaction_history.pop(0)
+    _transaction_histories[ds_key].append(tx_dict)
+    if len(_transaction_histories[ds_key]) > MAX_HISTORY:
+        _transaction_histories[ds_key].pop(0)
 
     # ── 3. Feature Extraction ────────────────────────────────
     from app.detection.rules import _parse_ts
     tx_ts = _parse_ts(tx_dict.get("timestamp", datetime.now(timezone.utc)))
-    recent_txs = _get_recent_txs(ref_ts=tx_ts, hours=24)
+    recent_txs = _get_recent_txs(ref_ts=tx_ts, hours=24, dataset_id=ds_key)
 
     # Anomaly score
     anomaly_score, top_features_raw = anomaly_engine.score_transaction(
-        tx_dict, _transaction_history[:-1]  # exclude current tx
+        tx_dict, _transaction_histories[ds_key][:-1]  # exclude current tx
     )
     top_feature_names = [f[0] for f in top_features_raw]
 
     # Temporal score
     temporal_score = temporal_engine.compute_transaction_temporal_score(
-        tx_dict, _transaction_history
+        tx_dict, _transaction_histories[ds_key]
     )
 
     # Graph score
@@ -96,23 +98,15 @@ async def process_transaction(
     graph_score = max(src_graph, dst_graph)
 
     # ── 4. Rule Detection ────────────────────────────────────
-    from datetime import timedelta
-    # Pre-populate dormancy activity to simulate history
-    for acct_key in ("source_account_id", "destination_account_id"):
-        acct = tx_dict.get(acct_key)
-        if acct and acct not in _account_last_activity:
-            if tx_dict.get("scenario_label") == "DORMANT_REACTIVATION":
-                _account_last_activity[acct] = tx_ts - timedelta(days=120)
-            else:
-                _account_last_activity[acct] = tx_ts - timedelta(days=1)
-
-    entities = _build_entities_from_history(_transaction_history)
+    # Ground-truth scenario_label checks are completely removed to prevent leakage.
+    # Last activity map is built purely from historical event sequencing.
+    entities = _build_entities_from_history(_transaction_histories[ds_key])
 
     rule_evidences = rule_engine.run_all_rules(
-        transactions=_transaction_history,
-        graph=_graph,
+        transactions=_transaction_histories[ds_key],
+        graph=_graphs[ds_key],
         entities=entities,
-        account_last_activity=_account_last_activity,
+        account_last_activity=_account_last_activities[ds_key],
     )
     # Update last activity AFTER running rules to preserve dormancy gap
     _update_account_last_activity(tx_dict)
@@ -125,9 +119,6 @@ async def process_transaction(
 
     # ── 5. Risk Fusion ───────────────────────────────────────
     rule_score = risk_fusion.compute_rule_score(relevant_evidences)
-
-    # Normalize scores (all already [0,1])
-
 
     tx_final_score = round(max(
         (
@@ -152,7 +143,7 @@ async def process_transaction(
     )
 
     # Update history with scores
-    _transaction_history[-1].update(full_tx.model_dump())
+    _transaction_histories[ds_key][-1].update(full_tx.model_dump())
 
     # ── 6. Alert Generation ──────────────────────────────────
     alert: Optional[Alert] = None
@@ -176,6 +167,7 @@ async def process_transaction(
             dataset_id=tx_dict.get("dataset_id", "SYNTHETIC"),
             top_features=top_feature_names,
             model_version=anomaly_engine.get_model_metadata().get("model_version") if anomaly_engine.get_model_metadata() else None,
+            ref_timestamp=tx_ts,
         )
         if alert:
             await redis_client.publish_alert(alert.to_brief_dict())
@@ -215,17 +207,24 @@ async def process_batch(
     dataset_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Process a batch of transactions through the pipeline."""
-    # Auto-train the ML anomaly model if enough samples and not loaded yet
+    # Auto-train the ML anomaly model on a dedicated baseline if model is not loaded yet
     if len(transactions) >= 50:
         try:
             from app.detection import anomaly
-            tx_dicts = [t.model_dump() for t in transactions]
-            anomaly.train_model(tx_dicts)
-            anomaly.load_model()
+            if not anomaly.is_model_loaded():
+                import json
+                from pathlib import Path
+                base_dir = Path(__file__).resolve().parent.parent.parent
+                train_file = base_dir / "data" / "train_baseline.json"
+                if train_file.exists():
+                    with open(train_file, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    tx_dicts = d.get("transactions", [])
+                    if tx_dicts:
+                        anomaly.train_model(tx_dicts)
+                anomaly.load_model()
         except Exception as e:
             logger.warning("auto_train_failed", error=str(e))
-
-
 
     results = []
     alerts_generated = 0
@@ -239,12 +238,13 @@ async def process_batch(
 
     # Run batch-level rule detection across all transactions at once
     batch_dicts = [t.model_dump() for t in results]
-    entities = _build_entities_from_history(_transaction_history)
+    ds_key = dataset_id or "SYNTHETIC"
+    entities = _build_entities_from_history(_transaction_histories[ds_key])
     batch_rules = rule_engine.run_all_rules(
-        transactions=_transaction_history,
-        graph=_graph,
+        transactions=_transaction_histories[ds_key],
+        graph=_graphs[ds_key],
         entities=entities,
-        account_last_activity=_account_last_activity,
+        account_last_activity=_account_last_activities[ds_key],
     )
 
     # Generate cluster-level alerts for batch-level findings
@@ -252,6 +252,17 @@ async def process_batch(
     for evidence in batch_rules:
         # Only alert if the evidence involves at least one transaction from the current batch
         if evidence.score >= 0.5 and any(tid in batch_tx_ids for tid in evidence.transaction_ids):
+            from dateutil.parser import parse
+            # Find the max timestamp in the batch to make it deterministic
+            batch_tx_times = []
+            for t in batch_dicts:
+                ts_val = t.get("timestamp")
+                if ts_val:
+                    if isinstance(ts_val, str):
+                        ts_val = parse(ts_val)
+                    batch_tx_times.append(ts_val)
+            ref_ts = max(batch_tx_times) if batch_tx_times else datetime.now(timezone.utc)
+
             alert = risk_fusion.fuse_risk_scores(
                 rule_evidences=[evidence],
                 anomaly_score=0.0,
@@ -261,6 +272,7 @@ async def process_batch(
                 transaction_ids=evidence.transaction_ids,
                 alert_type=evidence.rule_id,
                 dataset_id=dataset_id or "SYNTHETIC",
+                ref_timestamp=ref_ts,
             )
             if alert:
                 alerts_generated += 1
@@ -277,37 +289,29 @@ async def process_batch(
 
 def _build_entities_from_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Build entity list from transaction history to feed the rules engine.
-
-    Scenario-specific overrides (low revenue, shared PAN) are applied ONLY to
-    accounts that appear exclusively in that scenario's transactions.  Accounts
-    from the shared pool that also appear in normal transactions retain their
-    high default revenue so that the revenue-mismatch and shared-metadata rules
-    do not fire on unrelated normal transactions.
+    Extracts custom metadata from transaction reference fields (clean & label-free).
     """
-    # Pre-compute scenario membership per account.
-    # scenario_labels_per_account[acct_id] = set of scenario_label values seen
-    from collections import defaultdict
-    scenario_labels_per_account: Dict[str, set] = defaultdict(set)
-    for tx in history:
-        lbl = tx.get("scenario_label") or "NORMAL"
-        for role in ("source_account_id", "destination_account_id"):
-            acct_id = tx.get(role)
-            if acct_id:
-                scenario_labels_per_account[acct_id].add(lbl)
-
-    # Accounts that appear ONLY in REVENUE_MISMATCH transactions
-    revenue_mismatch_exclusive: set = {
-        acct for acct, labels in scenario_labels_per_account.items()
-        if labels == {"REVENUE_MISMATCH"}
-    }
-    # Accounts that appear ONLY in SHARED_METADATA_CLUSTER transactions
-    cluster_exclusive: set = {
-        acct for acct, labels in scenario_labels_per_account.items()
-        if labels == {"SHARED_METADATA_CLUSTER"}
-    }
-
     entities_map: Dict[str, Any] = {}
     for tx in history:
+        ref = tx.get("reference", "")
+        # Parse reference for metadata tags
+        # e.g. REF-SHARED-METADATA:PAN=PAN-SHARED-SHELL-CLUSTER;PHONE=PHONE-SHARED-SHELL-CLUSTER...
+        # e.g. REF-ANNUAL-REVENUE:100000
+        ref_metadata = {}
+        if isinstance(ref, str):
+            if "REF-SHARED-METADATA:" in ref:
+                parts = ref.split("REF-SHARED-METADATA:", 1)[1].split(";")
+                for p in parts:
+                    if "=" in p:
+                        k, v = p.split("=", 1)
+                        ref_metadata[k.lower().strip()] = v.strip()
+            elif "REF-ANNUAL-REVENUE:" in ref:
+                try:
+                    val_str = ref.split("REF-ANNUAL-REVENUE:", 1)[1].strip()
+                    ref_metadata["annual_revenue"] = float(val_str)
+                except Exception:
+                    pass
+
         for prefix, role in [("sender", "source"), ("receiver", "destination")]:
             acct_id = tx.get(f"{role}_account_id")
             if not acct_id:
@@ -319,23 +323,23 @@ def _build_entities_from_history(history: List[Dict[str, Any]]) -> List[Dict[str
                     "phone": f"PHONE-{acct_id}",
                     "email": f"email-{acct_id}@demo.test",
                     "address": f"Address-{acct_id}",
-                    # High default revenues; overridden below only for exclusive accounts
                     "annual_revenue": (
                         120_000_000.0 if tx.get(f"{prefix}_type") == "COMPANY"
                         else 12_000_000.0
                     ),
                 }
 
-            # Apply shared-metadata override ONLY to cluster-exclusive accounts
-            if acct_id in cluster_exclusive:
-                entities_map[acct_id]["pan"] = "PAN-SHARED-SHELL-CLUSTER"
-                entities_map[acct_id]["phone"] = "PHONE-SHARED-SHELL-CLUSTER"
-                entities_map[acct_id]["email"] = "email-shared-shell-cluster@demo.test"
-                entities_map[acct_id]["address"] = "Address-Shared-Shell-Cluster"
-
-            # Apply low-revenue override ONLY to revenue-mismatch-exclusive accounts
-            if acct_id in revenue_mismatch_exclusive:
-                entities_map[acct_id]["annual_revenue"] = 100_000.0
+            # Apply any parsed metadata from the reference field of transactions involving this account
+            if "pan" in ref_metadata:
+                entities_map[acct_id]["pan"] = ref_metadata["pan"]
+            if "phone" in ref_metadata:
+                entities_map[acct_id]["phone"] = ref_metadata["phone"]
+            if "email" in ref_metadata:
+                entities_map[acct_id]["email"] = ref_metadata["email"]
+            if "address" in ref_metadata:
+                entities_map[acct_id]["address"] = ref_metadata["address"]
+            if "annual_revenue" in ref_metadata:
+                entities_map[acct_id]["annual_revenue"] = ref_metadata["annual_revenue"]
 
     return list(entities_map.values())
 
@@ -353,11 +357,13 @@ def _update_account_last_activity(tx_dict: Dict[str, Any]) -> None:
     else:
         ts = datetime.now(timezone.utc)
 
+    ds_key = _get_dataset_key(tx_dict)
+    last_act = _account_last_activities[ds_key]
     for acct_key in ("source_account_id", "destination_account_id"):
         acct = tx_dict.get(acct_key, "")
         if acct:
-            if acct not in _account_last_activity or ts > _account_last_activity[acct]:
-                _account_last_activity[acct] = ts
+            if acct not in last_act or ts > last_act[acct]:
+                last_act[acct] = ts
 
 
 def _add_to_graph(tx_dict: Dict[str, Any]) -> None:
@@ -365,7 +371,8 @@ def _add_to_graph(tx_dict: Dict[str, Any]) -> None:
     src = tx_dict.get("source_account_id", "")
     dst = tx_dict.get("destination_account_id", "")
     if src and dst:
-        _graph.add_edge(
+        ds_key = _get_dataset_key(tx_dict)
+        _graphs[ds_key].add_edge(
             src, dst,
             key=tx_dict.get("id", ""),
             amount=float(tx_dict.get("amount", 0)),
@@ -379,14 +386,14 @@ def _add_to_graph(tx_dict: Dict[str, Any]) -> None:
             type_key = f"{prefix}_type"
             
             if name_key in tx_dict:
-                _graph.nodes[node_id]["owner_name"] = tx_dict[name_key]
+                _graphs[ds_key].nodes[node_id]["owner_name"] = tx_dict[name_key]
             if bank_key in tx_dict:
-                _graph.nodes[node_id]["bank_name"] = tx_dict[bank_key]
+                _graphs[ds_key].nodes[node_id]["bank_name"] = tx_dict[bank_key]
             if type_key in tx_dict:
-                _graph.nodes[node_id]["owner_type"] = tx_dict[type_key]
+                _graphs[ds_key].nodes[node_id]["owner_type"] = tx_dict[type_key]
 
 
-def _get_recent_txs(ref_ts: Optional[datetime] = None, hours: int = 24) -> List[Dict[str, Any]]:
+def _get_recent_txs(ref_ts: Optional[datetime] = None, hours: int = 24, dataset_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Return transactions from the last N hours for feature computation."""
     from datetime import timedelta
     if ref_ts is None:
@@ -394,8 +401,12 @@ def _get_recent_txs(ref_ts: Optional[datetime] = None, hours: int = 24) -> List[
     elif ref_ts.tzinfo is None:
         ref_ts = ref_ts.replace(tzinfo=timezone.utc)
     cutoff = ref_ts - timedelta(hours=hours)
+
+    ds_key = dataset_id or "SYNTHETIC"
+    history = _transaction_histories[ds_key]
+
     result = []
-    for t in _transaction_history:
+    for t in history:
         ts_raw = t.get("timestamp", datetime.now(timezone.utc))
         if isinstance(ts_raw, str):
             from dateutil.parser import parse
@@ -411,21 +422,43 @@ def _get_recent_txs(ref_ts: Optional[datetime] = None, hours: int = 24) -> List[
     return result
 
 
-def get_graph() -> nx.MultiDiGraph:
+def get_graph(dataset_id: Optional[str] = None) -> nx.MultiDiGraph:
     """Return the current in-memory graph."""
-    return _graph
+    if dataset_id:
+        return _graphs[dataset_id]
+    combined = nx.MultiDiGraph()
+    for g in _graphs.values():
+        combined.add_edges_from(g.edges(data=True))
+        for node, attrs in g.nodes(data=True):
+            combined.add_node(node, **attrs)
+    return combined
 
 
-def get_transaction_history() -> List[Dict[str, Any]]:
-    return list(_transaction_history)
+def get_transaction_history(dataset_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    if dataset_id:
+        return list(_transaction_histories[dataset_id])
+    combined = []
+    for hist in _transaction_histories.values():
+        combined.extend(hist)
+    def _parse_sort_ts(t):
+        ts = t.get("timestamp")
+        if isinstance(ts, str):
+            from dateutil.parser import parse
+            return parse(ts)
+        return ts or datetime.min
+    try:
+        combined.sort(key=_parse_sort_ts)
+    except Exception:
+        pass
+    return combined
 
 
 def reset_pipeline() -> None:
     """Reset all in-memory state (for testing)."""
-    global _graph, _transaction_history, _account_last_activity
-    _graph = nx.MultiDiGraph()
-    _transaction_history.clear()
-    _account_last_activity.clear()
+    global _graphs, _transaction_histories, _account_last_activities
+    _graphs.clear()
+    _transaction_histories.clear()
+    _account_last_activities.clear()
     risk_fusion.clear_alerts()
     redis_client.reset_local_state()
 

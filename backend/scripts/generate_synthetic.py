@@ -73,6 +73,7 @@ def _make_tx(
     dataset_id: str = "SYNTHETIC",
     is_suspicious: bool = False,
     scenario_label: str = "NORMAL",
+    reference: Optional[str] = None,
 ) -> Dict[str, Any]:
     return {
         "id": f"TX-{uuid.uuid4().hex[:12].upper()}",
@@ -84,7 +85,7 @@ def _make_tx(
         "transaction_type": tx_type,
         "channel": "INTERNET",
         "location": "SYNTHETIC",
-        "reference": f"REF-{SYNTHETIC_BANNER}",
+        "reference": reference if reference is not None else f"REF-{SYNTHETIC_BANNER}",
         "status": "COMPLETED",
         "dataset_id": dataset_id,
         "source": "SYNTHETIC",
@@ -262,6 +263,7 @@ def inject_shell_cluster(
             tx_type="NEFT",
             is_suspicious=True,
             scenario_label="SHARED_METADATA_CLUSTER",
+            reference="REF-SHARED-METADATA:PAN=PAN-SHARED-SHELL-CLUSTER;PHONE=PHONE-SHARED-SHELL-CLUSTER;EMAIL=email-shared-shell-cluster@demo.test;ADDRESS=Address-Shared-Shell-Cluster",
         ))
     return txs
 
@@ -348,6 +350,7 @@ def inject_revenue_mismatch(
             tx_type="RTGS",
             is_suspicious=True,
             scenario_label="REVENUE_MISMATCH",
+            reference="REF-ANNUAL-REVENUE:100000",
         ))
     return txs
 
@@ -406,8 +409,9 @@ def generate_dataset(
     seed: int = 42,
     normal_count: int = 500,
     num_accounts: int = 50,
+    only_normal: bool = False,
 ) -> Dict[str, Any]:
-    """Generate a complete synthetic dataset with all 10 scenarios."""
+    """Generate a complete synthetic dataset with optional suspicious scenarios."""
     rng = random.Random(seed)
     fake = Faker()
     fake.seed_instance(seed)
@@ -435,25 +439,30 @@ def generate_dataset(
     normal = generate_normal_transactions(accounts, rng, normal_count, base_time)
     all_transactions.extend(normal)
 
-    # Inject all 10 scenarios
-    scenarios = [
-        ("CIRCULAR_LAYERING", inject_circular_layering(accounts, rng, base_time + timedelta(days=1))),
-        ("FUNNEL_ACCOUNT", inject_funnel_account(accounts, rng, base_time + timedelta(days=3))),
-        ("RAPID_PASSTHROUGH", inject_rapid_passthrough(accounts, rng, base_time + timedelta(days=5))),
-        ("DORMANT_REACTIVATION", inject_dormant_reactivation(accounts, rng, base_time + timedelta(days=7))),
-        ("SHARED_METADATA_CLUSTER", inject_shell_cluster(accounts, rng, base_time + timedelta(days=9))),
-        ("STRUCTURING", inject_structuring(accounts, rng, base_time + timedelta(days=11))),
-        ("FAN_IN_FAN_OUT", inject_fan_in_fan_out(accounts, rng, base_time + timedelta(days=13))),
-        ("REVENUE_MISMATCH", inject_revenue_mismatch(accounts, rng, base_time + timedelta(days=15))),
-        ("ROUND_AMOUNT_PATTERN", inject_round_amounts(accounts, rng, base_time + timedelta(days=17))),
-        ("HIGH_VELOCITY_BURST", inject_high_velocity_burst(accounts, rng, base_time + timedelta(days=19))),
-    ]
-
     suspicious_count = 0
-    for label, txs in scenarios:
-        all_transactions.extend(txs)
-        suspicious_count += len(txs)
-        print(f"  [+] {label}: {len(txs)} transactions")
+    scenarios_list = []
+    if not only_normal:
+        # Inject all 10 scenarios
+        scenarios = [
+            ("CIRCULAR_LAYERING", inject_circular_layering(accounts, rng, base_time + timedelta(days=1))),
+            ("FUNNEL_ACCOUNT", inject_funnel_account(accounts, rng, base_time + timedelta(days=3))),
+            ("RAPID_PASSTHROUGH", inject_rapid_passthrough(accounts, rng, base_time + timedelta(days=5))),
+            ("DORMANT_REACTIVATION", inject_dormant_reactivation(accounts, rng, base_time + timedelta(days=7))),
+            ("SHARED_METADATA_CLUSTER", inject_shell_cluster(accounts, rng, base_time + timedelta(days=9))),
+            ("STRUCTURING", inject_structuring(accounts, rng, base_time + timedelta(days=11))),
+            ("FAN_IN_FAN_OUT", inject_fan_in_fan_out(accounts, rng, base_time + timedelta(days=13))),
+            ("REVENUE_MISMATCH", inject_revenue_mismatch(accounts, rng, base_time + timedelta(days=15))),
+            ("ROUND_AMOUNT_PATTERN", inject_round_amounts(accounts, rng, base_time + timedelta(days=17))),
+            ("HIGH_VELOCITY_BURST", inject_high_velocity_burst(accounts, rng, base_time + timedelta(days=19))),
+        ]
+
+        scenarios_list = [s[0] for s in scenarios]
+        for label, txs in scenarios:
+            all_transactions.extend(txs)
+            suspicious_count += len(txs)
+            print(f"  [+] {label}: {len(txs)} transactions")
+    else:
+        print("  [+] Baseline mode: skipping suspicious scenarios.")
 
     # Shuffle to mix suspicious among normal
     rng.shuffle(all_transactions)
@@ -499,7 +508,7 @@ def generate_dataset(
             "normal_transactions": normal_count,
             "suspicious_transactions": suspicious_count,
             "num_accounts": num_accounts,
-            "scenarios": [s[0] for s in scenarios],
+            "scenarios": scenarios_list,
             "disclaimer": "ALL DATA IS SYNTHETIC. Not for production use.",
             "banner": SYNTHETIC_BANNER,
         },
@@ -514,6 +523,7 @@ def main():
     parser.add_argument("--count", type=int, default=500)
     parser.add_argument("--accounts", type=int, default=50)
     parser.add_argument("--output", type=str, default="data/synthetic.json")
+    parser.add_argument("--only-normal", action="store_true", help="Generate only normal transactions")
     args = parser.parse_args()
 
     print(f"\nGenerating synthetic dataset (seed={args.seed}, normal_txs={args.count})...")
@@ -521,6 +531,7 @@ def main():
         seed=args.seed,
         normal_count=args.count,
         num_accounts=args.accounts,
+        only_normal=args.only_normal,
     )
 
     output_path = Path(args.output)

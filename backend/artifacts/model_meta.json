@@ -1,7 +1,7 @@
 {
   "model_version": "iso-forest-v1.0",
-  "trained_at": "2026-08-30T06:24:01.131141+00:00",
-  "n_samples": 67,
+  "trained_at": "2026-08-30T14:02:49.563681+00:00",
+  "n_samples": 500,
   "n_features": 10,
   "feature_names": [
     "amount",
