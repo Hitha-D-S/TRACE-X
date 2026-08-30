@@ -66,6 +66,21 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
     }
   }, []);
 
+  // Reset backend pipeline when window/tab is closed
+  useEffect(() => {
+    const handleUnload = () => {
+      try {
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(`${API}/api/v1/reset`);
+        } else {
+          fetch(`${API}/api/v1/reset`, { method: 'POST', keepalive: true }).catch(() => {});
+        }
+      } catch {}
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, []);
+
   const dismissToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);

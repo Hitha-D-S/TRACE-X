@@ -7,6 +7,7 @@ import {
   Play, RefreshCw, Database, Shield, TrendingDown, TrendingUp,
   AlertCircle, CheckCircle
 } from 'lucide-react';
+import { datasetUploadedThisSession } from '../session-state';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -88,6 +89,11 @@ function WhatIfPageContent() {
 
   // Load alerts
   useEffect(() => {
+    if (!datasetUploadedThisSession) {
+      setAlerts([]);
+      setAlertsLoading(false);
+      return;
+    }
     fetch(`${API}/api/v1/alerts?limit=50`)
       .then(r => r.json())
       .then(d => {

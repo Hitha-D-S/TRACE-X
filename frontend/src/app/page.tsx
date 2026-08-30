@@ -162,13 +162,12 @@ function MetricSkeleton() {
 export default function Dashboard() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [loading, setLoading] = useState(true);
+  // If no dataset uploaded this session, start not-loading so metric cards show '—' immediately
+  const [loading, setLoading] = useState(datasetUploadedThisSession);
   const [error, setError] = useState('');
   const [systemStatus, setSystemStatus] = useState<'online' | 'offline' | 'degraded'>('offline');
   const [trendData, setTrendData] = useState<{ time: string; alerts: number; avgRisk: number }[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  // True only if a dataset was uploaded in this browser session (resets on tab close/new tab)
-  const [hasDataset, setHasDataset] = useState(datasetUploadedThisSession);
 
   const fetchData = useCallback(async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
@@ -237,11 +236,13 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!hasDataset) return; // Don't fetch until a dataset is uploaded this session
+    // Only fetch from backend if a dataset was uploaded this session
+    // Otherwise metrics stay null and show '—' dashes on the dashboard
+    if (!datasetUploadedThisSession) return;
     fetchData();
     const interval = setInterval(() => fetchData(), 15_000);
     return () => clearInterval(interval);
-  }, [fetchData, hasDataset]);
+  }, [fetchData]);
 
   const severityData = metrics
     ? Object.entries(metrics.alerts_by_severity).map(([name, value]) => ({ name, value }))
@@ -257,82 +258,8 @@ export default function Dashboard() {
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto' }}>
 
-      {/* ── No-dataset empty state (fresh tab / new session) ──── */}
-      {!hasDataset ? (
-        <div style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          minHeight: '70vh', gap: 28, textAlign: 'center',
-        }}>
-          <div style={{
-            width: 80, height: 80, borderRadius: 22,
-            background: 'linear-gradient(135deg, rgba(59,130,246,0.2), rgba(6,182,212,0.1))',
-            border: '1px solid rgba(59,130,246,0.3)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 0 60px rgba(59,130,246,0.15)',
-          }}>
-            <Shield size={38} color="#60a5fa" />
-          </div>
-
-          <div>
-            <h1 style={{ fontSize: 26, fontWeight: 900, color: 'var(--text-primary)', marginBottom: 8, letterSpacing: '-0.02em' }}>
-              No Dataset Loaded
-            </h1>
-            <p style={{ fontSize: 14, color: 'var(--text-secondary)', maxWidth: 420, lineHeight: 1.7, margin: '0 auto' }}>
-              The Command Center is ready. Upload a transaction dataset to begin
-              detection, graph analysis, and alert generation.
-            </p>
-          </div>
-
-          <div style={{
-            display: 'flex', flexDirection: 'column', gap: 12, width: '100%', maxWidth: 380,
-          }}>
-            <Link href="/upload" style={{ textDecoration: 'none' }}>
-              <button
-                className="btn btn-primary"
-                style={{ width: '100%', padding: '14px 24px', fontSize: 14, fontWeight: 700, borderRadius: 12 }}
-                aria-label="Go to Upload Dataset page"
-              >
-                <Upload size={16} />
-                Upload Dataset to Begin
-              </button>
-            </Link>
-
-            <div style={{
-              padding: '14px 18px',
-              background: 'rgba(59,130,246,0.05)',
-              border: '1px solid rgba(59,130,246,0.15)',
-              borderRadius: 10, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6,
-            }}>
-              <span style={{ color: 'var(--accent)', fontWeight: 700 }}>Supported formats:</span>
-              {' '}CSV &amp; JSON · Max 50 MB · 100,000 rows
-            </div>
-          </div>
-
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12,
-            width: '100%', maxWidth: 480, marginTop: 8,
-          }}>
-            {[
-              { label: 'Graph Analysis', desc: 'Entity relationship mapping' },
-              { label: 'Pattern Detection', desc: 'ML-powered anomaly scoring' },
-              { label: 'Live Alerts', desc: 'Real-time crime flagging' },
-            ].map(({ label, desc }) => (
-              <div key={label} style={{
-                padding: '12px 14px', borderRadius: 10,
-                background: 'rgba(15,23,41,0.6)',
-                border: '1px solid var(--border-subtle)',
-                textAlign: 'center',
-              }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{label}</div>
-                <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>{desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <>
-        {/* ── Page Header ──────────────────────────────────── */}
-        <div className="page-header anim-fade-up" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+      {/* ── Page Header ──────────────────────────────────── */}
+      <div className="page-header anim-fade-up" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
             <h1 className="page-title">Command Center</h1>
@@ -396,40 +323,40 @@ export default function Dashboard() {
               icon={AlertTriangle}
               label="Total Alerts"
               rawValue={metrics?.alerts_total || 0}
-              sub={`${criticalCount} critical`}
+              sub={metrics ? `${criticalCount} critical` : undefined}
               color="#f97316"
               delay={50}
             />
             <MetricCard
               icon={AlertCircle}
               label="Critical Alerts"
-              rawValue={criticalCount}
+              rawValue={metrics ? criticalCount : 0}
               color="#ef4444"
               delay={100}
             />
             <MetricCard
               icon={Eye}
               label="Monitored Entities"
-              rawValue={entityCount}
+              rawValue={metrics ? entityCount : 0}
               color="#8b5cf6"
               delay={150}
             />
             <MetricCard
               icon={Zap}
               label="Detection Latency"
-              rawValue={117}
-              sub="P95 ≈ 234ms"
+              rawValue={metrics ? 117 : 0}
+              sub={metrics ? "P95 ≈ 234ms" : undefined}
               color="#10b981"
               delay={200}
-              format={(n) => `~${n}ms`}
+              format={metrics ? (n) => `~${n}ms` : undefined}
             />
             <MetricCard
               icon={Clock}
               label="System Uptime"
-              rawValue={uptimeMin}
+              rawValue={metrics ? uptimeMin : 0}
               color="#64748b"
               delay={250}
-              format={() => uptimeDisplay}
+              format={metrics ? () => uptimeDisplay : undefined}
             />
           </>
         )}
@@ -699,8 +626,6 @@ export default function Dashboard() {
           ))}
         </div>
       </div>
-        </>
-      )} {/* end hasDataset */}
     </div>
   );
 }

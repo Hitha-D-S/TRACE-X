@@ -6,6 +6,7 @@ import {
   Crosshair, Filter, Info, GitBranch, Shield,
   TrendingUp, Activity
 } from 'lucide-react';
+import { datasetUploadedThisSession } from '../session-state';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -86,6 +87,13 @@ export default function NetworkPage() {
   }, []);
 
   const fetchGraph = useCallback(async () => {
+    if (!datasetUploadedThisSession) {
+      setGraphData({ nodes: [], edges: [] });
+      setNodeCount(0);
+      setEdgeCount(0);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError('');
     try {

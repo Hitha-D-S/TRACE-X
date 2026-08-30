@@ -8,6 +8,7 @@ import {
   Shield, Zap, Activity, GitBranch, Clock, RefreshCw,
   Send, Database, FileText
 } from 'lucide-react';
+import { datasetUploadedThisSession } from '../session-state';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -441,6 +442,12 @@ function AlertsPageContent() {
   }, []);
 
   const fetchAlerts = useCallback(async (showRefresh = false) => {
+    if (!datasetUploadedThisSession) {
+      setAlerts([]);
+      setTotal(0);
+      setLoading(false);
+      return;
+    }
     if (showRefresh) setRefreshing(true);
     else setLoading(true);
     setError('');

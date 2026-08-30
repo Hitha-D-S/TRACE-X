@@ -81,7 +81,7 @@ async def metrics() -> Dict[str, Any]:
 
 
 @router.post("/reset", tags=["System"])
-async def reset_system(user: dict = Depends(get_current_user)) -> Dict[str, Any]:
+async def reset_system() -> Dict[str, Any]:
     """Reset all in-memory pipeline state and cache."""
     from app.detection.pipeline import reset_pipeline
     reset_pipeline()

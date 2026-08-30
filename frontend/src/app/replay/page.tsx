@@ -7,6 +7,7 @@ import {
   AlertTriangle, Zap, Activity, GitBranch, ChevronRight,
   RefreshCw, ArrowRight, Search, Database, Shield
 } from 'lucide-react';
+import { datasetUploadedThisSession } from '../session-state';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -150,6 +151,11 @@ function ReplayPageContent() {
 
   // Fetch alert list
   useEffect(() => {
+    if (!datasetUploadedThisSession) {
+      setAlerts([]);
+      setAlertsLoading(false);
+      return;
+    }
     fetch(`${API}/api/v1/alerts?limit=50`)
       .then(r => r.json())
       .then(d => {
