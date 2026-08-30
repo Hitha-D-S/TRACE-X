@@ -55,7 +55,7 @@ async def run_evaluation(
         from app.detection.pipeline import process_batch
 
         # Try to load bundled synthetic benchmark data
-        base_dir = Path(__file__).resolve().parent.parent.parent
+        base_dir = Path(__file__).resolve().parent.parent.parent.parent
         candidates = [
             base_dir / "data" / "synthetic.json",
         ]
