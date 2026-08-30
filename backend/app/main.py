@@ -134,6 +134,14 @@ async def login(req: LoginRequest):
 app.include_router(v1_router, prefix="/api/v1")
 
 
+# ── Docs Redirect ─────────────────────────────────────────────────
+from fastapi.responses import RedirectResponse
+
+@app.get("/docs", include_in_schema=False)
+async def docs_redirect():
+    return RedirectResponse(url="/api/docs")
+
+
 # ── Root ─────────────────────────────────────────────────────────
 @app.get("/", tags=["Root"])
 async def root() -> Dict[str, Any]:
