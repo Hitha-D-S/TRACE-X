@@ -6,6 +6,7 @@ import {
   Database, RefreshCw, X, ArrowRight, Info,
   AlertTriangle, Table, Map
 } from 'lucide-react';
+import { markDatasetUploaded } from '../session-state';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -160,6 +161,7 @@ export default function UploadPage() {
 
       const data: CommitResult = await res.json();
       setResult(data);
+      markDatasetUploaded(); // unlock dashboard for this session
       setStage('done');
     } catch (e: any) {
       setError(e.message || 'Commit failed.');

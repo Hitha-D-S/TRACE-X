@@ -9,8 +9,9 @@ import {
 import {
   AlertTriangle, Activity, Database, Zap, TrendingUp,
   Shield, Clock, Eye, CheckCircle, AlertCircle, Server,
-  ArrowRight, RefreshCw, Wifi, WifiOff, ArrowUpRight
+  ArrowRight, RefreshCw, Wifi, WifiOff, ArrowUpRight, Upload
 } from 'lucide-react';
+import { datasetUploadedThisSession } from './session-state';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -166,6 +167,8 @@ export default function Dashboard() {
   const [systemStatus, setSystemStatus] = useState<'online' | 'offline' | 'degraded'>('offline');
   const [trendData, setTrendData] = useState<{ time: string; alerts: number; avgRisk: number }[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  // True only if a dataset was uploaded in this browser session (resets on tab close/new tab)
+  const [hasDataset, setHasDataset] = useState(datasetUploadedThisSession);
 
   const fetchData = useCallback(async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
@@ -234,10 +237,11 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    if (!hasDataset) return; // Don't fetch until a dataset is uploaded this session
     fetchData();
     const interval = setInterval(() => fetchData(), 15_000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, hasDataset]);
 
   const severityData = metrics
     ? Object.entries(metrics.alerts_by_severity).map(([name, value]) => ({ name, value }))
@@ -252,8 +256,83 @@ export default function Dashboard() {
 
   return (
     <div style={{ maxWidth: 1400, margin: '0 auto' }}>
-      {/* ── Page Header ──────────────────────────────────── */}
-      <div className="page-header anim-fade-up" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+
+      {/* ── No-dataset empty state (fresh tab / new session) ──── */}
+      {!hasDataset ? (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          minHeight: '70vh', gap: 28, textAlign: 'center',
+        }}>
+          <div style={{
+            width: 80, height: 80, borderRadius: 22,
+            background: 'linear-gradient(135deg, rgba(59,130,246,0.2), rgba(6,182,212,0.1))',
+            border: '1px solid rgba(59,130,246,0.3)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 0 60px rgba(59,130,246,0.15)',
+          }}>
+            <Shield size={38} color="#60a5fa" />
+          </div>
+
+          <div>
+            <h1 style={{ fontSize: 26, fontWeight: 900, color: 'var(--text-primary)', marginBottom: 8, letterSpacing: '-0.02em' }}>
+              No Dataset Loaded
+            </h1>
+            <p style={{ fontSize: 14, color: 'var(--text-secondary)', maxWidth: 420, lineHeight: 1.7, margin: '0 auto' }}>
+              The Command Center is ready. Upload a transaction dataset to begin
+              detection, graph analysis, and alert generation.
+            </p>
+          </div>
+
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: 12, width: '100%', maxWidth: 380,
+          }}>
+            <Link href="/upload" style={{ textDecoration: 'none' }}>
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', padding: '14px 24px', fontSize: 14, fontWeight: 700, borderRadius: 12 }}
+                aria-label="Go to Upload Dataset page"
+              >
+                <Upload size={16} />
+                Upload Dataset to Begin
+              </button>
+            </Link>
+
+            <div style={{
+              padding: '14px 18px',
+              background: 'rgba(59,130,246,0.05)',
+              border: '1px solid rgba(59,130,246,0.15)',
+              borderRadius: 10, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6,
+            }}>
+              <span style={{ color: 'var(--accent)', fontWeight: 700 }}>Supported formats:</span>
+              {' '}CSV &amp; JSON · Max 50 MB · 100,000 rows
+            </div>
+          </div>
+
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12,
+            width: '100%', maxWidth: 480, marginTop: 8,
+          }}>
+            {[
+              { label: 'Graph Analysis', desc: 'Entity relationship mapping' },
+              { label: 'Pattern Detection', desc: 'ML-powered anomaly scoring' },
+              { label: 'Live Alerts', desc: 'Real-time crime flagging' },
+            ].map(({ label, desc }) => (
+              <div key={label} style={{
+                padding: '12px 14px', borderRadius: 10,
+                background: 'rgba(15,23,41,0.6)',
+                border: '1px solid var(--border-subtle)',
+                textAlign: 'center',
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>{desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <>
+        {/* ── Page Header ──────────────────────────────────── */}
+        <div className="page-header anim-fade-up" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
             <h1 className="page-title">Command Center</h1>
@@ -620,6 +699,8 @@ export default function Dashboard() {
           ))}
         </div>
       </div>
+        </>
+      )} {/* end hasDataset */}
     </div>
   );
 }
