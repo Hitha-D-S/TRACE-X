@@ -30,6 +30,7 @@ const NAV_ITEMS = [
 
 const BOTTOM_NAV_ITEMS = [
   { href: '/', label: 'Home', icon: LayoutDashboard },
+  { href: '/upload', label: 'Upload', icon: Upload },
   { href: '/alerts', label: 'Alerts', icon: AlertTriangle },
   { href: '/network', label: 'Network', icon: Network },
   { href: '/assistant', label: 'AI', icon: Bot },

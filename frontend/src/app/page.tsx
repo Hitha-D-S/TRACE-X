@@ -273,16 +273,28 @@ export default function Dashboard() {
           </div>
           <p className="page-subtitle">TRACE-X Real-Time Financial Crime Graph Intelligence Command Center</p>
         </div>
-        <button
-          className="btn btn-secondary btn-sm"
-          onClick={() => fetchData(true)}
-          disabled={refreshing}
-          style={{ flexShrink: 0 }}
-          aria-label="Refresh dashboard data"
-        >
-          <RefreshCw size={13} style={{ transition: 'transform 0.5s', transform: refreshing ? 'rotate(360deg)' : 'none' }} />
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Link href="/upload" style={{ textDecoration: 'none' }}>
+            <button
+              className="btn btn-primary btn-sm"
+              style={{ flexShrink: 0 }}
+              aria-label="Upload Dataset"
+            >
+              <Upload size={13} />
+              Upload Dataset
+            </button>
+          </Link>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => fetchData(true)}
+            disabled={refreshing}
+            style={{ flexShrink: 0 }}
+            aria-label="Refresh dashboard data"
+          >
+            <RefreshCw size={13} style={{ transition: 'transform 0.5s', transform: refreshing ? 'rotate(360deg)' : 'none' }} />
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* ── Error state ───────────────────────────────────── */}
