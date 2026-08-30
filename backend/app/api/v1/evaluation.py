@@ -49,9 +49,43 @@ async def run_evaluation(
     labeled = [t for t in history if t.get("is_suspicious") is not None]
 
     if not labeled:
+        import json
+        from pathlib import Path
+        from app.models.transaction import TransactionCreate
+        from app.detection.pipeline import process_batch
+
+        # Try to load bundled synthetic benchmark data
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        candidates = [
+            base_dir / "data" / "synthetic.json",
+            base_dir / "data" / "synthetic_organised_crime.json",
+            base_dir / "data" / "synthetic_corporate_fraud.json",
+            base_dir / "data" / "synthetic_retail_fraud.json",
+        ]
+        
+        tx_creates = []
+        for c in candidates:
+            if c.exists():
+                try:
+                    with open(c, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                    for t in d.get("transactions", []):
+                        try:
+                            tx_creates.append(TransactionCreate(**t))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        if tx_creates:
+            await process_batch(tx_creates, dataset_id="SYNTHETIC_EVAL")
+            history = get_transaction_history()
+            labeled = [t for t in history if t.get("is_suspicious") is not None]
+
+    if not labeled:
         return {
             "status": "no_labeled_data",
-            "message": "Run 'generate_synthetic.py' first to create labeled ground-truth data.",
+            "message": "No labeled ground-truth data available.",
         }
 
     # Collect only the unique dataset IDs present in the labeled transactions to prevent cross-contamination
