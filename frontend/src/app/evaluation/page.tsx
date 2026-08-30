@@ -37,7 +37,8 @@ interface EvalResult {
 // ── Gauge card ────────────────────────────────────────────────────
 function GaugeCard({ label, value, description, goodThreshold = 0.7, isRate = false }:
   { label: string; value: number; description: string; goodThreshold?: number; isRate?: boolean }) {
-  const pct = Math.round(value * 100);
+  const pct = value * 100;
+  const formattedValue = pct.toFixed(2);
   const isGood = isRate ? value < 0.3 : value >= goodThreshold;
   const color = isGood ? '#34d399' : value >= 0.5 ? '#fbbf24' : '#f87171';
   // SVG arc
@@ -70,7 +71,7 @@ function GaugeCard({ label, value, description, goodThreshold = 0.7, isRate = fa
           position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
         }}>
-          <div className="gauge-value" style={{ color }}>{pct}%</div>
+          <div className="gauge-value" style={{ color, fontSize: 20, margin: 0 }}>{formattedValue}%</div>
         </div>
       </div>
       <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8, lineHeight: 1.4 }}>
