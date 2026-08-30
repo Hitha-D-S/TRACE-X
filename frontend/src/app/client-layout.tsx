@@ -12,6 +12,11 @@ import './globals.css';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// In-memory flag — resets every time the JS bundle loads fresh (new tab / hard reload).
+// Using sessionStorage here would incorrectly skip the boot screen when a user restores
+// a closed tab, because browsers preserve sessionStorage across tab restores.
+let hasBooted = false;
+
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/network', label: 'Live Network', icon: Network },
@@ -45,26 +50,19 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
   const [booting, setBooting] = useState(false);
   const [bootStep, setBootStep] = useState(0);
 
-  // Boot sequence check (runs once per browser session)
+  // Boot sequence check — runs once per fresh page load (in-memory flag resets on load)
   useEffect(() => {
-    try {
-      const alreadyBooted = sessionStorage.getItem('tracex_session_booted');
-      if (!alreadyBooted) {
-        setBooting(true);
-        const t1 = setTimeout(() => setBootStep(1), 400);
-        const t2 = setTimeout(() => setBootStep(2), 800);
-        const t3 = setTimeout(() => setBootStep(3), 1200);
-        const t4 = setTimeout(() => {
-          setBooting(false);
-          sessionStorage.setItem('tracex_session_booted', '1');
-        }, 1600);
+    if (!hasBooted) {
+      hasBooted = true;
+      setBooting(true);
+      const t1 = setTimeout(() => setBootStep(1), 400);
+      const t2 = setTimeout(() => setBootStep(2), 800);
+      const t3 = setTimeout(() => setBootStep(3), 1200);
+      const t4 = setTimeout(() => setBooting(false), 1600);
 
-        return () => {
-          clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
-        };
-      }
-    } catch {
-      setBooting(false);
+      return () => {
+        clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); clearTimeout(t4);
+      };
     }
   }, []);
 
