@@ -1,60 +1,74 @@
 'use client';
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Search, Filter, RefreshCw, ZoomIn, ZoomOut, Crosshair, X, Database } from 'lucide-react';
+import {
+  Search, RefreshCw, Maximize2, X, Database,
+  Crosshair, Filter, Info, GitBranch, Shield,
+  TrendingUp, Activity
+} from 'lucide-react';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-const RISK_NODE_COLORS: Record<string, string> = {
-  CRITICAL: '#dc2626',
-  HIGH: '#ea580c',
-  MEDIUM: '#ca8a04',
-  LOW: '#16a34a',
-  DEFAULT: '#3b82f6',
-};
-
-function getRiskLevel(score: number): string {
-  if (score >= 80) return 'CRITICAL';
-  if (score >= 60) return 'HIGH';
-  if (score >= 30) return 'MEDIUM';
-  if (score > 0) return 'LOW';
-  return 'DEFAULT';
+interface GraphNode {
+  id: string;
+  label?: string;
+  risk_score?: number;
+  type?: string;
+  dataset_id?: string;
+  owner_name?: string;
+  bank_name?: string;
+  owner_type?: string;
 }
 
-interface GraphData {
-  nodes: Array<{
-    id: string;
-    label?: string;
-    risk_score?: number;
-    type?: string;
-    dataset_id?: string;
-  }>;
-  edges: Array<{
-    id: string;
-    from: string;
-    to: string;
-    amount?: number;
-    final_risk_score?: number;
-    timestamp?: string;
-  }>;
+interface GraphEdge {
+  id: string;
+  from: string;
+  to: string;
+  amount?: number;
+  currency?: string;
+  final_risk_score?: number;
+  timestamp?: string;
+  transaction_type?: string;
 }
 
 interface NodeDetail {
   id: string;
   risk_score: number;
   type: string;
-  transactionCount?: number;
-  amount?: number;
   owner_name?: string;
   bank_name?: string;
   owner_type?: string;
+  transactionCount?: number;
+}
+
+function getRiskLevel(score: number): string {
+  if (score >= 80) return 'CRITICAL';
+  if (score >= 60) return 'HIGH';
+  if (score >= 30) return 'MEDIUM';
+  if (score > 0) return 'LOW';
+  return 'SAFE';
+}
+
+const RISK_COLORS: Record<string, string> = {
+  CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#f59e0b', LOW: '#10b981', SAFE: '#3b82f6',
+};
+
+function RiskBadge({ score }: { score: number }) {
+  const level = getRiskLevel(score);
+  const color = RISK_COLORS[level];
+  return (
+    <span className={`badge badge-${level.toLowerCase()}`}>
+      {level} · {score.toFixed(0)}
+    </span>
+  );
 }
 
 export default function NetworkPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<any>(null);
-  const [graphData, setGraphData] = useState<GraphData>({ nodes: [], edges: [] });
+  const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({ nodes: [], edges: [] });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [selectedNode, setSelectedNode] = useState<NodeDetail | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [minRisk, setMinRisk] = useState(0);
@@ -62,82 +76,87 @@ export default function NetworkPage() {
   const [datasets, setDatasets] = useState<any[]>([]);
   const [nodeCount, setNodeCount] = useState(0);
   const [edgeCount, setEdgeCount] = useState(0);
+  const [showPanel, setShowPanel] = useState(false);
 
   useEffect(() => {
     fetch(`${API}/api/v1/datasets`)
-      .then(res => res.json())
-      .then(data => setDatasets(data.datasets || []))
-      .catch(err => console.error("Error fetching datasets:", err));
+      .then(r => r.json())
+      .then(d => setDatasets(d.datasets || []))
+      .catch(() => {});
   }, []);
-
-
 
   const fetchGraph = useCallback(async () => {
     setLoading(true);
+    setError('');
     try {
-      const params = new URLSearchParams({ 
-        use_cache: 'false', 
-        limit: '300',
-        t: String(Date.now()) 
-      });
+      const params = new URLSearchParams({ use_cache: 'false', limit: '300' });
       if (minRisk > 0) params.set('min_risk', String(minRisk));
       if (datasetId) params.set('dataset_id', datasetId);
 
       const res = await fetch(`${API}/api/v1/graph/network?${params}`);
-      if (res.ok) {
-        const data: GraphData = await res.json();
-        setGraphData(data);
-        setNodeCount(data.nodes.length);
-        setEdgeCount(data.edges.length);
-      }
-    } catch (e) {
-      console.error('Graph fetch failed:', e);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setGraphData({ nodes: data.nodes || [], edges: data.edges || [] });
+      setNodeCount(data.total_nodes || 0);
+      setEdgeCount(data.total_edges || 0);
+    } catch (e: any) {
+      setError('Failed to load graph data. Check backend connection.');
     } finally {
       setLoading(false);
     }
   }, [minRisk, datasetId]);
 
-  useEffect(() => {
-    fetchGraph();
-    const interval = setInterval(fetchGraph, 15_000);
-    return () => clearInterval(interval);
-  }, [fetchGraph]);
+  useEffect(() => { fetchGraph(); }, [fetchGraph]);
 
-  // Initialize Vis.js network
+  // Keyboard Escape listener to close entity detail panel
   useEffect(() => {
-    if (!containerRef.current || graphData.nodes.length === 0) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSelectedNode(null);
+        setShowPanel(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
-    const initNetwork = async () => {
+  // Initialize vis-network
+  useEffect(() => {
+    if (loading || !containerRef.current || graphData.nodes.length === 0) return;
+
+    let mounted = true;
+    const importVis = async () => {
       try {
         const { Network, DataSet } = await import('vis-network/standalone');
+
+        if (!mounted || !containerRef.current) return;
+
+        // Destroy old network
+        if (networkRef.current) {
+          networkRef.current.destroy();
+          networkRef.current = null;
+        }
 
         const visNodes = new DataSet(
           graphData.nodes.map(n => {
             const risk = n.risk_score || 0;
             const level = getRiskLevel(risk);
-            const color = RISK_NODE_COLORS[level];
-            const size = 12 + Math.min(risk / 5, 20);
-
-            let tooltip = `${n.id}\nRisk: ${risk.toFixed(1)} (${level})`;
-            if ((n as any).owner_name) tooltip += `\nOwner: ${(n as any).owner_name}`;
-            if ((n as any).bank_name) tooltip += `\nBank: ${(n as any).bank_name}`;
-            if ((n as any).owner_type) tooltip += `\nType: ${(n as any).owner_type}`;
-
+            const nodeColor = RISK_COLORS[level];
             return {
               id: n.id,
-              label: (n as any).owner_name 
-                ? `${(n as any).owner_name}\n(...${n.id.slice(-4)})` 
-                : (n.label || `...${n.id.slice(-6)}`),
+              label: n.label || `···${n.id.slice(-6)}`,
+              title: `${n.owner_name || n.id}\nBank: ${n.bank_name || 'Unknown'}\nRisk: ${risk.toFixed(0)}`,
               color: {
-                background: `${color}33`,
-                border: color,
-                highlight: { background: `${color}66`, border: color },
+                background: `${nodeColor}20`,
+                border: nodeColor,
+                highlight: { background: `${nodeColor}35`, border: nodeColor },
+                hover: { background: `${nodeColor}30`, border: nodeColor },
               },
-              size,
-              font: { color: '#e2e8f0', size: 10, multi: true },
-              title: tooltip,
-              borderWidth: risk >= 60 ? 2 : 1,
-              shadow: risk >= 60 ? { enabled: true, color: color, size: 10 } : { enabled: false },
+              font: { color: '#e8eef8', size: 11, face: 'JetBrains Mono, monospace' },
+              borderWidth: risk >= 60 ? 2 : 1.5,
+              borderWidthSelected: 3,
+              size: 14 + Math.min(risk / 10, 12),
+              shape: n.owner_type === 'COMPANY' ? 'box' : 'dot',
             };
           })
         );
@@ -145,341 +164,334 @@ export default function NetworkPage() {
         const visEdges = new DataSet(
           graphData.edges.map(e => {
             const risk = e.final_risk_score || 0;
-            const color = risk >= 60 ? '#ef4444' : risk >= 30 ? '#f59e0b' : '#334155';
+            const edgeColor = risk >= 60 ? `${RISK_COLORS['HIGH']}90` : risk >= 30 ? `${RISK_COLORS['MEDIUM']}70` : 'rgba(59, 130, 246, 0.3)';
             return {
               id: e.id,
               from: e.from,
               to: e.to,
-              color: { color, highlight: '#60a5fa' },
-              width: risk >= 60 ? 2.5 : 1,
-              arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-              title: `Amount: ${(e.amount || 0).toLocaleString()} INR\nRisk: ${risk.toFixed(1)}`,
-              dashes: risk < 30,
+              title: `Amount: ${e.amount?.toLocaleString()} ${e.currency || 'INR'}\nRisk: ${risk.toFixed(0)}\nType: ${e.transaction_type || 'OTHER'}`,
+              color: { color: edgeColor, highlight: '#60a5fa', hover: '#93c5fd' },
+              width: 1 + Math.min(risk / 40, 3),
+              arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+              smooth: { enabled: true, type: 'curvedCW', roundness: 0.15 },
             };
           })
         );
 
-        if (networkRef.current) {
-          networkRef.current.setOptions({ physics: { enabled: true } });
-          networkRef.current.setData({ nodes: visNodes, edges: visEdges });
-          return;
-        }
-
         const options = {
-          nodes: { shape: 'dot', scaling: { min: 10, max: 40 } },
-          edges: { smooth: { enabled: true, type: 'dynamic', roundness: 0.5 } },
+          nodes: {
+            shape: 'dot',
+            shadow: { enabled: true, size: 8, color: 'rgba(0,0,0,0.4)' },
+          },
+          edges: {
+            smooth: { enabled: true, type: 'curvedCW', roundness: 0.15 },
+            shadow: false,
+          },
           physics: {
             enabled: true,
             solver: 'forceAtlas2Based',
             forceAtlas2Based: {
-              gravitationalConstant: -180,
-              centralGravity: 0.005,
-              springLength: 150,
-              springConstant: 0.05,
-              avoidOverlap: 1,
+              gravitationalConstant: -50,
+              centralGravity: 0.01,
+              springLength: 120,
+              springConstant: 0.06,
+              damping: 0.5,
             },
-            stabilization: { iterations: 300 },
+            stabilization: { iterations: 200, fit: true },
           },
           interaction: {
             hover: true,
             tooltipDelay: 200,
+            navigationButtons: false,
+            keyboard: false,
             zoomView: true,
-            dragView: true,
-            multiselect: true,
           },
-          layout: { improvedLayout: true },
+          background: { color: 'transparent' },
         };
 
-        const network = new Network(
-          containerRef.current!,
-          { nodes: visNodes, edges: visEdges },
-          options
-        );
+        const network = new Network(containerRef.current, { nodes: visNodes, edges: visEdges }, options);
+        networkRef.current = network;
 
-        network.on('click', (params) => {
+        network.on('click', (params: any) => {
           if (params.nodes.length > 0) {
             const nodeId = params.nodes[0];
             const node = graphData.nodes.find(n => n.id === nodeId);
             if (node) {
-              const related = graphData.edges.filter(
-                e => e.from === nodeId || e.to === nodeId
-              );
+              // Count transactions
+              const txCount = graphData.edges.filter(e => e.from === nodeId || e.to === nodeId).length;
               setSelectedNode({
-                id: nodeId,
+                id: node.id,
                 risk_score: node.risk_score || 0,
                 type: node.type || 'BankAccount',
-                transactionCount: related.length,
-                amount: related.reduce((s, e) => s + (e.amount || 0), 0),
-                owner_name: (node as any).owner_name,
-                bank_name: (node as any).bank_name,
-                owner_type: (node as any).owner_type,
+                owner_name: node.owner_name,
+                bank_name: node.bank_name,
+                owner_type: node.owner_type,
+                transactionCount: txCount,
               });
+              setShowPanel(true);
             }
           } else {
             setSelectedNode(null);
+            setShowPanel(false);
           }
         });
 
-        network.on('stabilized', () => {
-          network.fit({ animation: { duration: 500 } as any });
+        // Stabilize then disable physics
+        network.on('stabilizationIterationsDone', () => {
           network.setOptions({ physics: { enabled: false } });
         });
 
-        networkRef.current = network;
-      } catch (e) {
-        console.error('Vis.js init failed:', e);
+      } catch (err) {
+        setError('Failed to initialize graph visualization.');
       }
     };
 
-    initNetwork();
-  }, [graphData]);
+    importVis();
+    return () => { mounted = false; };
+  }, [graphData, loading]);
 
+  // Search highlight
   const handleSearch = () => {
-    if (!networkRef.current || !searchQuery) return;
-    const cleanQuery = searchQuery.replace(/^\.*|\.*$/g, '').trim().toLowerCase();
-    if (!cleanQuery) return;
-
-    const node = graphData.nodes.find(n => {
-      const idMatch = n.id.toLowerCase().includes(cleanQuery);
-      const labelMatch = (n.label || '').toLowerCase().includes(cleanQuery);
-      const nameMatch = ((n as any).owner_name || '').toLowerCase().includes(cleanQuery);
-      return idMatch || labelMatch || nameMatch;
-    });
-
-    if (node && networkRef.current) {
-      networkRef.current.focus(node.id, { scale: 1.5, animation: { duration: 500 } as any });
-      networkRef.current.selectNodes([node.id]);
-
-      const related = graphData.edges.filter(
-        e => e.from === node.id || e.to === node.id
-      );
-      setSelectedNode({
-        id: node.id,
-        risk_score: node.risk_score || 0,
-        type: node.type || 'BankAccount',
-        transactionCount: related.length,
-        amount: related.reduce((s, e) => s + (e.amount || 0), 0),
-        owner_name: (node as any).owner_name,
-        bank_name: (node as any).bank_name,
-        owner_type: (node as any).owner_type,
-      });
-    } else {
-      alert(`No node matching "${searchQuery}" found in the network.`);
+    if (!networkRef.current || !searchQuery.trim()) return;
+    const matchNode = graphData.nodes.find(n =>
+      n.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (n.owner_name || '').toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    if (matchNode) {
+      networkRef.current.focus(matchNode.id, { animation: { duration: 600, easingFunction: 'easeInOutQuad' }, scale: 1.5 });
+      networkRef.current.selectNodes([matchNode.id]);
     }
   };
 
-  const handleFitAll = () => {
-    networkRef.current?.fit({ animation: { duration: 500 } as any });
+  const handleFitGraph = () => {
+    networkRef.current?.fit({ animation: { duration: 600, easingFunction: 'easeInOutQuad' } });
   };
 
-  const level = selectedNode ? getRiskLevel(selectedNode.risk_score) : 'DEFAULT';
-  const riskColor = RISK_NODE_COLORS[level];
-
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Toolbar */}
-      <div style={{
-        padding: '12px 20px',
-        background: '#0f1624',
-        borderBottom: '1px solid #1e293b',
-        display: 'flex', alignItems: 'center', gap: 12,
-        flexWrap: 'wrap',
-      }}>
-        <h2 style={{ fontSize: 15, fontWeight: 600, color: '#e2e8f0', marginRight: 8 }}>
-          Live Network
-        </h2>
-
-        {/* Search */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6,
-          background: '#1a2236', border: '1px solid #1e293b', borderRadius: 8,
-          padding: '6px 10px', flex: '1', maxWidth: 240 }}>
-          <Search size={13} style={{ color: '#64748b', cursor: 'pointer' }} onClick={handleSearch} />
-          <input
-            placeholder="Search entity ID..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleSearch()}
-            style={{ background: 'none', border: 'none', outline: 'none',
-              color: '#e2e8f0', fontSize: 12, width: '100%' }}
-          />
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)', maxWidth: 1400, margin: '0 auto' }}>
+      {/* Page header */}
+      <div className="page-header" style={{ flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <h1 className="page-title">Live Transaction Network</h1>
+            <p className="page-subtitle">
+              {nodeCount} entities · {edgeCount} transactions · Follow the money
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary btn-sm" onClick={handleFitGraph} aria-label="Fit graph to view">
+              <Maximize2 size={13} />
+              Fit
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={fetchGraph} aria-label="Refresh graph">
+              <RefreshCw size={13} />
+              Refresh
+            </button>
+          </div>
         </div>
 
-        {/* Min Risk Filter */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Filter size={13} style={{ color: '#64748b' }} />
-          <span style={{ fontSize: 11, color: '#64748b' }}>Min Risk:</span>
-          <select
-            value={minRisk}
-            onChange={e => setMinRisk(Number(e.target.value))}
-            style={{
-              background: '#1a2236', border: '1px solid #1e293b', color: '#e2e8f0',
-              borderRadius: 6, padding: '4px 8px', fontSize: 12, outline: 'none',
-            }}
-          >
-            <option value={0}>All</option>
-            <option value={30}>Medium+</option>
-            <option value={60}>High+</option>
-            <option value={80}>Critical</option>
+        {/* Controls */}
+        <div style={{ display: 'flex', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', flex: 1, minWidth: 200, maxWidth: 320 }}>
+            <Search size={13} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', pointerEvents: 'none' }} />
+            <input
+              className="input input-search"
+              placeholder="Search entity or owner…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSearch()}
+              aria-label="Search graph node"
+            />
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={handleSearch} aria-label="Find node">
+            <Crosshair size={13} />
+            Find
+          </button>
+
+          <select className="select" value={minRisk} onChange={e => setMinRisk(Number(e.target.value))} aria-label="Minimum risk filter">
+            <option value={0}>All Risk Levels</option>
+            <option value={30}>Medium+ (≥30)</option>
+            <option value={60}>High+ (≥60)</option>
+            <option value={80}>Critical (≥80)</option>
           </select>
-        </div>
 
-        {/* Dataset Filter */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Database size={13} style={{ color: '#64748b' }} />
-          <span style={{ fontSize: 11, color: '#64748b' }}>Dataset:</span>
-          <select
-            value={datasetId}
-            onChange={e => setDatasetId(e.target.value)}
-            style={{
-              background: '#1a2236', border: '1px solid #1e293b', color: '#e2e8f0',
-              borderRadius: 6, padding: '4px 8px', fontSize: 12, outline: 'none',
-            }}
-          >
-            <option value="">All (Demo)</option>
-            {datasets.map(d => (
-              <option key={d.dataset_id} value={d.dataset_id}>
-                {d.dataset_id}
-              </option>
-            ))}
+          <select className="select" value={datasetId} onChange={e => setDatasetId(e.target.value)} aria-label="Dataset filter">
+            <option value="">All Datasets</option>
+            {datasets.map(d => <option key={d.dataset_id} value={d.dataset_id}>{d.dataset_id}</option>)}
           </select>
-        </div>
-
-        <button onClick={fetchGraph} style={{
-          display: 'flex', alignItems: 'center', gap: 4,
-          background: '#1a2236', border: '1px solid #1e293b',
-          color: '#94a3b8', borderRadius: 6, padding: '6px 10px',
-          cursor: 'pointer', fontSize: 12,
-        }}>
-          <RefreshCw size={13} />
-          Refresh
-        </button>
-
-        <button onClick={handleFitAll} style={{
-          display: 'flex', alignItems: 'center', gap: 4,
-          background: '#1a2236', border: '1px solid #1e293b',
-          color: '#94a3b8', borderRadius: 6, padding: '6px 10px',
-          cursor: 'pointer', fontSize: 12,
-        }}>
-          <Crosshair size={13} />
-          Fit All
-        </button>
-
-        <div style={{ marginLeft: 'auto', fontSize: 11, color: '#64748b' }}>
-          {nodeCount} nodes · {edgeCount} edges
-          {loading && <span style={{ marginLeft: 8, color: '#3b82f6' }}>↻ Loading…</span>}
         </div>
       </div>
 
-      {/* Graph + Detail Panel */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
+      {/* Graph area */}
+      <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', gap: 16 }}>
         {/* Graph canvas */}
-        {graphData.nodes.length === 0 && !loading ? (
-          <div style={{
-            flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            flexDirection: 'column', gap: 12, color: '#64748b',
-          }}>
-            <div style={{ fontSize: 48 }}>📊</div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>No graph data yet</div>
-            <div style={{ fontSize: 13 }}>
-              Ingest transactions to populate the network graph.
-            </div>
-          </div>
-        ) : (
-          <div ref={containerRef} className="graph-container" style={{ flex: 1 }} />
-        )}
+        <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+          <div ref={containerRef} className="graph-container" style={{ width: '100%', height: '100%', minHeight: 400 }} />
 
-        {/* Node detail panel */}
+          {/* Loading overlay */}
+          {loading && (
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(5, 8, 16, 0.85)', borderRadius: 14,
+              gap: 14,
+            }}>
+              <div style={{
+                width: 36, height: 36,
+                border: '3px solid rgba(59, 130, 246, 0.2)',
+                borderTop: '3px solid #3b82f6',
+                borderRadius: '50%',
+                animation: 'spin 1s linear infinite',
+              }} />
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Loading transaction network…</div>
+            </div>
+          )}
+
+          {/* Error overlay */}
+          {error && !loading && (
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(5, 8, 16, 0.85)', borderRadius: 14,
+              gap: 10,
+            }}>
+              <Shield size={28} style={{ color: 'var(--critical)', opacity: 0.7 }} />
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{error}</div>
+              <button className="btn btn-secondary btn-sm" onClick={fetchGraph}>Retry</button>
+            </div>
+          )}
+
+          {/* Empty overlay */}
+          {!loading && !error && graphData.nodes.length === 0 && (
+            <div style={{
+              position: 'absolute', inset: 0,
+              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              background: 'rgba(5, 8, 16, 0.7)', borderRadius: 14,
+              gap: 10,
+            }}>
+              <GitBranch size={32} style={{ color: 'var(--text-tertiary)', opacity: 0.4 }} />
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>No transaction data yet</div>
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Run the stream producer to populate the network</div>
+            </div>
+          )}
+
+          {/* Graph legend */}
+          {!loading && graphData.nodes.length > 0 && (
+            <div style={{
+              position: 'absolute', bottom: 16, left: 16,
+              background: 'rgba(9, 14, 26, 0.9)', backdropFilter: 'blur(10px)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 8, padding: '8px 12px',
+              display: 'flex', gap: 12, flexWrap: 'wrap',
+            }}>
+              {Object.entries(RISK_COLORS).map(([level, color]) => (
+                <div key={level} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />
+                  <span style={{ fontSize: 9, color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.06em' }}>{level}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Node detail panel (desktop) */}
         {selectedNode && (
-          <div style={{
-            position: 'absolute', right: 12, top: 12,
-            width: 280, background: 'rgba(17, 24, 39, 0.95)',
-            border: `1px solid ${riskColor}44`,
-            borderRadius: 12, padding: 16,
-            backdropFilter: 'blur(12px)',
-            boxShadow: `0 0 24px ${riskColor}22`,
+          <div className="hide-mobile glass-card anim-slide-right" style={{
+            width: 280, flexShrink: 0, padding: 20,
+            display: 'flex', flexDirection: 'column', gap: 14,
+            alignSelf: 'flex-start',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: riskColor }}>
-                ENTITY DETAIL
-              </span>
-              <button onClick={() => setSelectedNode(null)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: 13, fontWeight: 700 }}>Entity Detail</h3>
+              <button className="btn btn-ghost btn-icon btn-sm" onClick={() => { setSelectedNode(null); setShowPanel(false); }} aria-label="Close detail">
                 <X size={14} />
               </button>
             </div>
 
-            <div className="mono" style={{ color: '#60a5fa', fontSize: 11, marginBottom: 12 }}>
-              {selectedNode.id}
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {[
-                ['Type', selectedNode.type],
-                ...(selectedNode.owner_name ? [['Owner', selectedNode.owner_name]] : []),
-                ...(selectedNode.bank_name ? [['Bank', selectedNode.bank_name]] : []),
-                ...(selectedNode.owner_type ? [['Owner Type', selectedNode.owner_type]] : []),
-                ['Risk Score', `${selectedNode.risk_score.toFixed(1)}/100`],
-                ['Risk Level', level],
-                ['Transactions', selectedNode.transactionCount?.toString() || '0'],
-                ['Total Volume', `₹${(selectedNode.amount || 0).toLocaleString()}`],
-              ].map(([k, v]) => (
-                <div key={k} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: 11, color: '#64748b' }}>{k}</span>
-                  <span style={{ fontSize: 11, color: '#e2e8f0', fontWeight: 500 }}>{v}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <div style={{
-                height: 4, background: '#1e293b', borderRadius: 4, overflow: 'hidden',
-              }}>
-                <div style={{
-                  height: '100%', width: `${selectedNode.risk_score}%`,
-                  background: riskColor, borderRadius: 4,
-                  transition: 'width 0.5s ease',
-                }} />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                <span style={{ fontSize: 9, color: '#64748b' }}>0</span>
-                <span style={{ fontSize: 9, color: '#64748b' }}>100</span>
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.1em', marginBottom: 4 }}>ACCOUNT ID</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-accent)', wordBreak: 'break-all' }}>
+                ···{selectedNode.id.slice(-10)}
               </div>
             </div>
 
-            <a
-              href={`/alerts?entity=${selectedNode.id}`}
-              style={{
-                display: 'block', marginTop: 12, textAlign: 'center',
-                padding: '8px', background: 'rgba(59, 130, 246, 0.15)',
-                border: '1px solid rgba(59, 130, 246, 0.3)',
-                borderRadius: 6, fontSize: 12, color: '#3b82f6',
-                textDecoration: 'none', cursor: 'pointer',
-              }}
-            >
-              View Alerts →
-            </a>
+            <div>
+              <RiskBadge score={selectedNode.risk_score} />
+            </div>
+
+            {selectedNode.owner_name && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.1em', marginBottom: 4 }}>OWNER</div>
+                <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{selectedNode.owner_name}</div>
+              </div>
+            )}
+
+            {selectedNode.bank_name && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.1em', marginBottom: 4 }}>BANK</div>
+                <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{selectedNode.bank_name}</div>
+              </div>
+            )}
+
+            {selectedNode.owner_type && (
+              <div>
+                <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.1em', marginBottom: 4 }}>TYPE</div>
+                <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{selectedNode.owner_type}</div>
+              </div>
+            )}
+
+            <div>
+              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.1em', marginBottom: 4 }}>TRANSACTIONS</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>{selectedNode.transactionCount}</div>
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 12 }}>
+              <a href={`/alerts?search=${selectedNode.id}`} style={{ textDecoration: 'none' }}>
+                <button className="btn btn-secondary btn-sm" style={{ width: '100%' }}>
+                  <Shield size={12} />
+                  View Alerts
+                </button>
+              </a>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Legend */}
-      <div style={{
-        padding: '8px 20px', background: '#0f1624',
-        borderTop: '1px solid #1e293b',
-        display: 'flex', gap: 16, alignItems: 'center',
-      }}>
-        <span style={{ fontSize: 10, color: '#64748b' }}>RISK:</span>
-        {Object.entries(RISK_NODE_COLORS).filter(([k]) => k !== 'DEFAULT').map(([level, color]) => (
-          <div key={level} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <div style={{ width: 10, height: 10, borderRadius: '50%',
-              background: `${color}33`, border: `2px solid ${color}` }} />
-            <span style={{ fontSize: 10, color: '#94a3b8' }}>{level}</span>
+      {/* Mobile node detail bottom sheet */}
+      {selectedNode && showPanel && (
+        <div className="show-mobile" style={{
+          position: 'fixed', bottom: 64, left: 0, right: 0,
+          background: 'rgba(9, 14, 26, 0.97)', backdropFilter: 'blur(16px)',
+          border: '1px solid var(--border-default)', borderRadius: '20px 20px 0 0',
+          padding: 20, zIndex: 150,
+          animation: 'fadeInUp 0.3s ease',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700 }}>Entity Detail</h3>
+            <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setShowPanel(false)} aria-label="Close">
+              <X size={14} />
+            </button>
           </div>
-        ))}
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: '#64748b' }}>
-          Click a node for details · Scroll to zoom · Drag to pan
-        </span>
-      </div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-accent)', marginBottom: 6 }}>···{selectedNode.id.slice(-10)}</div>
+              <RiskBadge score={selectedNode.risk_score} />
+              {selectedNode.owner_name && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>{selectedNode.owner_name}</div>}
+              {selectedNode.bank_name && <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{selectedNode.bank_name}</div>}
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: 28, fontWeight: 900, color: RISK_COLORS[getRiskLevel(selectedNode.risk_score)] }}>{selectedNode.risk_score.toFixed(0)}</div>
+              <div style={{ fontSize: 9, color: 'var(--text-tertiary)', fontWeight: 700 }}>RISK SCORE</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginTop: 4 }}>{selectedNode.transactionCount}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>txns</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }

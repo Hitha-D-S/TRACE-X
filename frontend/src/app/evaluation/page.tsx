@@ -1,8 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { BarChart3, RefreshCw, CheckCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  BarChart3, Play, RefreshCw, CheckCircle,
+  Target, TrendingUp, TrendingDown, Shield,
+  AlertCircle, Info, Award
+} from 'lucide-react';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -18,32 +21,77 @@ interface EvalResult {
   f1: number;
   false_positive_rate: number;
   per_scenario: Record<string, {
-    precision: number; recall: number; f1: number;
-    tp: number; fp: number; fn: number; tn: number;
+    precision: number;
+    recall: number;
+    f1: number;
+    tp: number;
+    fp: number;
+    fn: number;
+    tn: number;
   }>;
 }
 
-function Gauge({ value, label, color = '#3b82f6' }: { value: number; label: string; color?: string }) {
-  const pct = (value * 100).toFixed(1);
+// ── Gauge card ────────────────────────────────────────────────────
+function GaugeCard({ label, value, description, goodThreshold = 0.7, isRate = false }:
+  { label: string; value: number; description: string; goodThreshold?: number; isRate?: boolean }) {
+  const pct = Math.round(value * 100);
+  const isGood = isRate ? value < 0.3 : value >= goodThreshold;
+  const color = isGood ? '#34d399' : value >= 0.5 ? '#fbbf24' : '#f87171';
+  // SVG arc
+  const r = 40;
+  const cx = 60;
+  const cy = 60;
+  const circumference = 2 * Math.PI * r;
+  const stroke = circumference * (1 - pct / 100);
+
   return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ position: 'relative', width: 100, height: 100, margin: '0 auto' }}>
-        <svg viewBox="0 0 100 100" style={{ transform: 'rotate(-90deg)' }}>
-          <circle cx="50" cy="50" r="40" fill="none" stroke="#1e293b" strokeWidth="10" />
-          <circle cx="50" cy="50" r="40" fill="none"
-            stroke={color} strokeWidth="10"
-            strokeDasharray={`${value * 251.2} 251.2`}
-            strokeLinecap="round" />
+    <div className="gauge-card anim-fade-up" style={{ opacity: 0 }}>
+      <div className="gauge-label">{label}</div>
+      <div style={{ position: 'relative', width: 120, height: 120, margin: '0 auto' }}>
+        <svg width="120" height="120" style={{ transform: 'rotate(-90deg)' }}>
+          {/* Background circle */}
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(30, 50, 80, 0.5)" strokeWidth="8" />
+          {/* Value arc */}
+          <circle
+            cx={cx} cy={cy} r={r}
+            fill="none"
+            stroke={color}
+            strokeWidth="8"
+            strokeDasharray={circumference}
+            strokeDashoffset={stroke}
+            strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 1s cubic-bezier(0.4, 0, 0.2, 1)', filter: `drop-shadow(0 0 6px ${color}80)` }}
+          />
         </svg>
         <div style={{
-          position: 'absolute', inset: 0, display: 'flex',
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
-          flexDirection: 'column',
         }}>
-          <span style={{ fontSize: 18, fontWeight: 700, color: '#e2e8f0' }}>{pct}%</span>
+          <div className="gauge-value" style={{ color }}>{pct}%</div>
         </div>
       </div>
-      <div style={{ fontSize: 12, color: '#64748b', marginTop: 6, fontWeight: 500 }}>{label}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8, lineHeight: 1.4 }}>
+        {description}
+      </div>
+    </div>
+  );
+}
+
+// ── Confusion matrix cell ─────────────────────────────────────────
+function MatrixCell({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+      padding: '16px 12px',
+      background: `${color}0C`,
+      border: `1px solid ${color}25`,
+      borderRadius: 10,
+      flex: 1,
+    }}>
+      <div style={{ fontSize: 28, fontWeight: 900, color }}>{value}</div>
+      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--text-tertiary)', textAlign: 'center' }}>
+        {label}
+      </div>
     </div>
   );
 }
@@ -51,193 +99,280 @@ function Gauge({ value, label, color = '#3b82f6' }: { value: number; label: stri
 export default function EvaluationPage() {
   const [result, setResult] = useState<EvalResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [running, setRunning] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState('');
 
-  const fetchLatest = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/api/v1/evaluation/latest`);
-      if (res.ok) setResult(await res.json());
-    } catch {}
-  }, []);
-
-  useEffect(() => { fetchLatest(); }, [fetchLatest]);
-
   const runEvaluation = async () => {
-    setRunning(true);
+    setLoading(true);
     setError('');
     try {
       const res = await fetch(`${API}/api/v1/evaluation/run`, { method: 'POST' });
-      if (!res.ok) throw new Error('Evaluation failed');
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
       const data = await res.json();
       if (data.status === 'no_labeled_data') {
-        setError(data.message);
+        setError('No labeled ground-truth data found. Run generate_synthetic.py first.');
       } else {
         setResult(data);
       }
     } catch (e: any) {
-      setError(e.message);
+      setError(e.message || 'Evaluation failed. Check backend connection.');
     } finally {
-      setRunning(false);
+      setLoading(false);
     }
   };
 
-  const confusionData = result ? [
-    { label: 'TP', value: result.true_positives, color: '#10b981' },
-    { label: 'FP', value: result.false_positives, color: '#ef4444' },
-    { label: 'FN', value: result.false_negatives, color: '#f59e0b' },
-    { label: 'TN', value: result.true_negatives, color: '#3b82f6' },
-  ] : [];
-
-  const scenarioData = result
-    ? Object.entries(result.per_scenario).map(([name, m]) => ({
-        name: name.replace(/_/g, ' ').slice(0, 15),
-        precision: m.precision * 100,
-        recall: m.recall * 100,
-        f1: m.f1 * 100,
-      }))
-    : [];
+  const fetchLatest = async () => {
+    setFetching(true);
+    setError('');
+    try {
+      const res = await fetch(`${API}/api/v1/evaluation/latest`);
+      if (res.status === 404) {
+        setError('No evaluation results found. Run evaluation first.');
+      } else if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      } else {
+        setResult(await res.json());
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to fetch results.');
+    } finally {
+      setFetching(false);
+    }
+  };
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+    <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+      {/* Header */}
+      <div className="page-header" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h2 style={{ fontSize: 18, fontWeight: 700, color: '#e2e8f0', marginBottom: 4 }}>
-            Detection Evaluation
-          </h2>
-          <p style={{ fontSize: 13, color: '#64748b' }}>
-            Benchmark detection performance against synthetic ground-truth labels.
-          </p>
+          <h1 className="page-title">Detection Evaluation</h1>
+          <p className="page-subtitle">Benchmark against synthetic ground-truth labels — not for regulatory use</p>
         </div>
-        <button
-          onClick={runEvaluation}
-          disabled={running}
-          className="btn-primary"
-          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-        >
-          {running ? <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <BarChart3 size={14} />}
-          {running ? 'Running…' : 'Run Evaluation'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={fetchLatest}
+            disabled={fetching}
+            aria-label="Load latest evaluation"
+          >
+            <RefreshCw size={13} style={{ transform: fetching ? 'rotate(360deg)' : 'none', transition: 'transform 0.5s' }} />
+            Load Latest
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={runEvaluation}
+            disabled={loading}
+            aria-label="Run detection evaluation"
+          >
+            {loading ? (
+              <>
+                <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                Running…
+              </>
+            ) : (
+              <>
+                <Play size={14} />
+                Run Evaluation
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
+      {/* Disclaimer */}
+      <div style={{
+        padding: '10px 16px', marginBottom: 24,
+        background: 'rgba(245, 158, 11, 0.07)',
+        border: '1px solid rgba(245, 158, 11, 0.2)',
+        borderRadius: 10, fontSize: 12, color: 'var(--text-warning)',
+        display: 'flex', gap: 8, alignItems: 'flex-start',
+      }}>
+        <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+        <span>
+          Evaluation uses <strong>synthetic ground-truth labels</strong> from the generated dataset.
+          Metrics reflect detection performance on artificial data only. Do not use these metrics for regulatory or production claims.
+        </span>
+      </div>
+
+      {/* Error */}
       {error && (
-        <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
-          borderRadius: 8, padding: 12, marginBottom: 20, color: '#fca5a5', fontSize: 13 }}>
+        <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 10, padding: '12px 16px', marginBottom: 20, fontSize: 13, color: '#f87171', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <AlertCircle size={14} />
           {error}
         </div>
       )}
 
-      {!result && !running && (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: '#64748b' }}>
-          <BarChart3 size={40} style={{ marginBottom: 12, opacity: 0.3 }} />
-          <div>No evaluation results yet.</div>
-          <div style={{ fontSize: 12, marginTop: 4 }}>
-            Run synthetic data first, then click "Run Evaluation"
+      {/* Loading */}
+      {loading && (
+        <div className="glass-card" style={{ padding: 60, textAlign: 'center' }}>
+          <div style={{ width: 40, height: 40, margin: '0 auto 16px', border: '3px solid rgba(59,130,246,0.2)', borderTop: '3px solid #3b82f6', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+          <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Running evaluation against ground-truth labels…</div>
+        </div>
+      )}
+
+      {/* No result yet */}
+      {!loading && !result && !error && (
+        <div className="glass-card">
+          <div className="empty-state">
+            <BarChart3 size={36} className="empty-state-icon" />
+            <div className="empty-state-title">No evaluation results</div>
+            <div className="empty-state-body">
+              Click "Run Evaluation" to benchmark the detection engine against synthetic ground-truth labels.
+              Ensure you've run <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>generate_synthetic.py</code> first.
+            </div>
+            <button className="btn btn-primary" onClick={runEvaluation} disabled={loading} style={{ marginTop: 16 }}>
+              <Play size={14} />
+              Run Evaluation
+            </button>
           </div>
         </div>
       )}
 
-      {result && (
-        <>
-          {/* Timestamp */}
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 20 }}>
-            Last run: {new Date(result.run_at).toLocaleString()} · 
-            {result.labeled_transactions} labeled transactions
+      {/* Results */}
+      {result && !loading && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+          {/* Run metadata */}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span className="badge badge-info">
+              <CheckCircle size={9} />
+              Evaluation Complete
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Run at: {new Date(result.run_at).toLocaleString()}
+            </span>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Labeled transactions: <strong style={{ color: 'var(--text-primary)' }}>{result.labeled_transactions}</strong>
+            </span>
           </div>
 
-          {/* Gauges */}
-          <div className="glass-card" style={{ padding: 24, marginBottom: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 20 }}>
-              Overall Detection Metrics
+          {/* Core metric gauges */}
+          <div>
+            <div className="section-label" style={{ marginBottom: 16 }}>
+              <Award size={10} />
+              Core Detection Metrics
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 16 }}>
-              <Gauge value={result.precision} label="Precision" color="#3b82f6" />
-              <Gauge value={result.recall} label="Recall (TPR)" color="#10b981" />
-              <Gauge value={result.f1} label="F1 Score" color="#8b5cf6" />
-              <Gauge value={result.false_positive_rate} label="FPR" color="#ef4444" />
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+              gap: 16,
+            }} className="stagger-children">
+              <GaugeCard label="PRECISION" value={result.precision} description="Of all alerts raised, what fraction were truly suspicious" goodThreshold={0.7} />
+              <GaugeCard label="RECALL" value={result.recall} description="Of all truly suspicious transactions, what fraction were caught" goodThreshold={0.6} />
+              <GaugeCard label="F1 SCORE" value={result.f1} description="Harmonic mean of precision and recall" goodThreshold={0.65} />
+              <GaugeCard label="FALSE POSITIVE RATE" value={result.false_positive_rate} description="Of all normal transactions, what fraction were incorrectly flagged" isRate goodThreshold={0.3} />
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
-            {/* Confusion Matrix */}
-            <div className="glass-card" style={{ padding: 20 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 16 }}>
-                Confusion Matrix
+          {/* Confusion matrix */}
+          <div>
+            <div className="section-label" style={{ marginBottom: 16 }}>
+              <Target size={10} />
+              Confusion Matrix
+            </div>
+            <div className="glass-card" style={{ padding: 24 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <MatrixCell label="TRUE POSITIVES" value={result.true_positives} color="#34d399" />
+                <MatrixCell label="FALSE POSITIVES" value={result.false_positives} color="#f87171" />
+                <MatrixCell label="FALSE NEGATIVES" value={result.false_negatives} color="#fbbf24" />
+                <MatrixCell label="TRUE NEGATIVES" value={result.true_negatives} color="#60a5fa" />
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                {confusionData.map(({ label, value, color }) => (
-                  <div key={label} style={{
-                    background: `${color}11`, border: `1px solid ${color}33`,
-                    borderRadius: 8, padding: 16, textAlign: 'center',
-                  }}>
-                    <div style={{ fontSize: 24, fontWeight: 700, color }}>{value}</div>
-                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-                      {label === 'TP' ? 'True Positives' :
-                       label === 'FP' ? 'False Positives' :
-                       label === 'FN' ? 'False Negatives' : 'True Negatives'}
+              <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+                <span>TP + TN = {result.true_positives + result.true_negatives} correct</span>
+                <span>FP + FN = {result.false_positives + result.false_negatives} errors</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Per-scenario breakdown */}
+          {Object.keys(result.per_scenario).length > 0 && (
+            <div>
+              <div className="section-label" style={{ marginBottom: 16 }}>
+                <BarChart3 size={10} />
+                Per-Scenario Breakdown
+              </div>
+              <div className="glass-card" style={{ overflow: 'hidden' }}>
+                {/* Desktop table */}
+                <div className="hide-mobile">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Scenario</th>
+                        <th>Precision</th>
+                        <th>Recall</th>
+                        <th>F1</th>
+                        <th>TP</th>
+                        <th>FP</th>
+                        <th>FN</th>
+                        <th>TN</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(result.per_scenario).map(([scenario, metrics]) => (
+                        <tr key={scenario}>
+                          <td>
+                            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent-bright)' }}>
+                              {scenario}
+                            </span>
+                          </td>
+                          <td>
+                            <span style={{ color: metrics.precision >= 0.7 ? '#34d399' : metrics.precision >= 0.5 ? '#fbbf24' : '#f87171', fontWeight: 700 }}>
+                              {(metrics.precision * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                          <td>
+                            <span style={{ color: metrics.recall >= 0.6 ? '#34d399' : metrics.recall >= 0.4 ? '#fbbf24' : '#f87171', fontWeight: 700 }}>
+                              {(metrics.recall * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                          <td>
+                            <span style={{ fontWeight: 700 }}>
+                              {(metrics.f1 * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                          <td style={{ color: '#34d399' }}>{metrics.tp}</td>
+                          <td style={{ color: '#f87171' }}>{metrics.fp}</td>
+                          <td style={{ color: '#fbbf24' }}>{metrics.fn}</td>
+                          <td style={{ color: '#60a5fa' }}>{metrics.tn}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Mobile cards */}
+                <div className="show-mobile" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {Object.entries(result.per_scenario).map(([scenario, metrics]) => (
+                    <div key={scenario} style={{
+                      background: 'rgba(10, 18, 35, 0.6)', border: '1px solid var(--border-subtle)',
+                      borderRadius: 10, padding: 14,
+                    }}>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent-bright)', marginBottom: 10 }}>{scenario}</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                        {[
+                          { l: 'Precision', v: `${(metrics.precision * 100).toFixed(1)}%` },
+                          { l: 'Recall', v: `${(metrics.recall * 100).toFixed(1)}%` },
+                          { l: 'F1', v: `${(metrics.f1 * 100).toFixed(1)}%` },
+                        ].map(({ l, v }) => (
+                          <div key={l} style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)' }}>{v}</div>
+                            <div style={{ fontSize: 9, color: 'var(--text-tertiary)', fontWeight: 700, letterSpacing: '0.08em' }}>{l}</div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
-
-            {/* Per-scenario */}
-            <div className="glass-card" style={{ padding: 20 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 16 }}>
-                Per-Scenario F1
-              </div>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={scenarioData} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: '#64748b', fontSize: 10 }} domain={[0, 100]} />
-                  <YAxis type="category" dataKey="name" tick={{ fill: '#64748b', fontSize: 9 }} width={80} />
-                  <Tooltip contentStyle={{ background: '#1a2236', border: '1px solid #1e293b' }} />
-                  <Bar dataKey="f1" name="F1 (%)" fill="#3b82f6" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Scenario breakdown table */}
-          <div className="glass-card" style={{ padding: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0', marginBottom: 16 }}>
-              Scenario Breakdown
-            </div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Scenario</th>
-                  <th>Precision</th>
-                  <th>Recall</th>
-                  <th>F1</th>
-                  <th>TP</th>
-                  <th>FP</th>
-                  <th>FN</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(result.per_scenario).map(([scenario, m]) => (
-                  <tr key={scenario}>
-                    <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{scenario.replace(/_/g, ' ')}</td>
-                    <td style={{ color: m.precision >= 0.8 ? '#10b981' : m.precision >= 0.6 ? '#f59e0b' : '#ef4444' }}>
-                      {(m.precision * 100).toFixed(1)}%
-                    </td>
-                    <td style={{ color: m.recall >= 0.8 ? '#10b981' : m.recall >= 0.6 ? '#f59e0b' : '#ef4444' }}>
-                      {(m.recall * 100).toFixed(1)}%
-                    </td>
-                    <td style={{ color: m.f1 >= 0.8 ? '#10b981' : m.f1 >= 0.6 ? '#f59e0b' : '#ef4444', fontWeight: 600 }}>
-                      {(m.f1 * 100).toFixed(1)}%
-                    </td>
-                    <td style={{ color: '#10b981' }}>{m.tp}</td>
-                    <td style={{ color: '#ef4444' }}>{m.fp}</td>
-                    <td style={{ color: '#f59e0b' }}>{m.fn}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+          )}
+        </div>
       )}
+
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }
