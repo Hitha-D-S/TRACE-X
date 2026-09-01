@@ -278,11 +278,40 @@ export default function UploadPage() {
             aria-label="File input"
           />
 
-          <div style={{ marginTop: 20, padding: '14px 18px', background: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.15)', borderRadius: 10 }}>
+          {/* Test Datasets for Judges & Evaluators */}
+          <div style={{ marginTop: 20, padding: '16px 20px', background: 'rgba(16, 185, 129, 0.05)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: 10 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <Database size={15} style={{ color: '#10b981', flexShrink: 0, marginTop: 2 }} />
+              <div style={{ width: '100%' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#34d399', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>Benchmark Data Files for Testing</span>
+                  <span className="badge badge-success" style={{ fontSize: 10, padding: '2px 6px' }}>Ready to Upload</span>
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 10 }}>
+                  Evaluators and judges can test with the sample transaction files provided in the repository under <code style={{ color: '#38bdf8', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>backend/data/</code>:
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 8 }}>
+                  {[
+                    { file: 'synthetic_corporate_fraud.json', desc: 'Shell companies, circular routing & director rings' },
+                    { file: 'synthetic_organised_crime.json', desc: 'Mule accounts, funnel nodes & velocity layering' },
+                    { file: 'synthetic_retail_fraud.json', desc: 'Dormant account reactivation & transaction bursts' },
+                    { file: 'synthetic.json', desc: 'Complete multi-scenario financial crime simulation' },
+                  ].map(item => (
+                    <div key={item.file} style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border-subtle)', borderRadius: 6, padding: '8px 10px' }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', fontFamily: 'var(--font-mono)', marginBottom: 2 }}>{item.file}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{item.desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, padding: '14px 18px', background: 'rgba(59, 130, 246, 0.05)', border: '1px solid rgba(59, 130, 246, 0.15)', borderRadius: 10 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <Info size={13} style={{ color: 'var(--accent)', flexShrink: 0, marginTop: 1 }} />
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>Expected CSV/JSON columns</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>Expected CSV/JSON columns (or upload any custom file)</div>
                 <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                   Required: <code style={{ color: 'var(--accent)', fontFamily: 'var(--font-mono)' }}>source_account_id, destination_account_id, amount</code><br />
                   Optional: <code style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>timestamp, currency, transaction_type, channel, reference</code>
